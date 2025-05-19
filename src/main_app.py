@@ -33,7 +33,10 @@ class TradingSimulatorApp(tk.Tk):
         # To store results from slippage calculation for other models
         self.avg_execution_price = None
         self.actual_asset_traded = None
-        self.actual_usd_spent_slippage = None
+        self.actual_usd_spent_slippage = None # USD spent during slippage walk
+        self.slippage_percentage_val = None # Store numeric slippage percentage
+        self.fee_cost_usd_val = None        # Store numeric fee cost
+        self.market_impact_usd_val = None   # Store numeric market impact cost
 
 
         self.exchange_var = tk.StringVar(value="OKX")
@@ -186,6 +189,14 @@ class TradingSimulatorApp(tk.Tk):
         self.after(50, self._recalculate_all_outputs)
 
     def _recalculate_all_outputs(self):
+        # Reset numeric values at the start of each calculation attempt
+        self.slippage_percentage_val = None
+        self.fee_cost_usd_val = None
+        self.market_impact_usd_val = None
+        self.avg_execution_price = None
+        self.actual_asset_traded = None
+        self.actual_usd_spent_slippage = None # Important to reset this
+
         try:
             # 1. Read Input: Quantity USD
             try:
@@ -224,11 +235,12 @@ class TradingSimulatorApp(tk.Tk):
 
             # --- Calculate Slippage (Walk the Book) ---
             # Requires live order book data, so self.order_book must be up-to-date
+            slippage_cost_usd = 0.0 # Default to 0 if not calculable
             if not self.order_book.asks or not self.order_book.bids: # Check if book has data
                 self.slippage_var.set("No book data")
-                self.avg_execution_price = None
-                self.actual_asset_traded = None
-                self.actual_usd_spent_slippage = None
+                self.avg_execution_price = None #
+                self.actual_asset_traded = None #
+                self.actual_usd_spent_slippage = None #
             else:
                 slp_pct, avg_exec_p, asset_acq, usd_spent = calculate_slippage_walk_book(
                     quantity_usd_val, self.order_book
@@ -239,7 +251,21 @@ class TradingSimulatorApp(tk.Tk):
                 self.actual_usd_spent_slippage = usd_spent
 
                 if slp_pct is not None:
+                    self.slippage_percentage_val = slp_pct # Store numeric value
                     self.slippage_var.set(f"{slp_pct:.4f}%")
+                    # Calculate slippage cost in USD.
+                    # Slippage cost is the difference between what you actually paid (usd_spent)
+                    # and what you would have paid at the mid-price for the asset_acquired.
+                    # mid_price_snapshot used inside calculate_slippage_walk_book for asset_acquired:
+                    if self.order_book.get_best_ask() and self.order_book.get_best_bid():
+                        mid_price = (self.order_book.get_best_ask()[0] + self.order_book.get_best_bid()[0]) / 2
+                        if asset_acq > 0 : # if any asset was acquired
+                             value_at_mid = asset_acq * mid_price
+                             slippage_cost_usd = usd_spent - value_at_mid
+                        # If slp_pct is positive (paid more), slippage_cost_usd will be positive.
+                    # Alternative simpler slippage cost based on target USD, but less accurate if fill is partial:
+                    # slippage_cost_usd = (slp_pct / 100.0) * quantity_usd_val 
+
                 else:
                     if quantity_usd_val > 0 and asset_acq == 0 : # Tried to buy but got nothing
                          self.slippage_var.set("Depth Exceeded?")
@@ -257,6 +283,7 @@ class TradingSimulatorApp(tk.Tk):
             # Let's use quantity_usd_val as it's the "target".
             calculated_fees = calculate_expected_fees(quantity_usd_val, fee_tier_val)
             self.fees_var.set(f"{calculated_fees:.4f}")
+            self.fee_cost_usd_val = calculated_fees
 
             # --- Calculate Market Impact Cost ---
             # Use actual USD spent from slippage calculation if available and valid, else target quantity
@@ -267,15 +294,40 @@ class TradingSimulatorApp(tk.Tk):
                 self.market_impact_var.set(f"{market_impact_usd:.4f}")
             else:
                 self.market_impact_var.set("Error")
+            self.market_impact_usd_val = market_impact_usd
+
+            # --- Calculate Net Cost ---
+            if self.fee_cost_usd_val is not None and \
+               self.market_impact_usd_val is not None and \
+               self.slippage_percentage_val is not None: # Check if all components are valid
+                
+                # If quantity_usd_val is 0, all costs should be 0
+                if quantity_usd_val == 0:
+                    net_total_cost_usd = 0.0
+                    slippage_cost_usd = 0.0 # Ensure this is zero for zero quantity
+                else:
+                    net_total_cost_usd = slippage_cost_usd + self.fee_cost_usd_val + self.market_impact_usd_val
+                
+                self.net_cost_var.set(f"{net_total_cost_usd:.4f}")
+            else:
+                self.net_cost_var.set("Error")
+
+            # --- Maker/Taker Proportion ---
+            if quantity_usd_val == 0:
+                 self.maker_taker_proportion_var.set("N/A (No Trade)")
+            else:
+                 self.maker_taker_proportion_var.set("100% Taker")
 
             # --- Other placeholders ---
-            # self.net_cost_var.set("Calculating...")
-            # self.maker_taker_proportion_var.set("Calculating...")
             # self.internal_latency_var.set("Calculating...")
 
         except Exception as e:
             logger.error(f"Error during recalculation: {e}", exc_info=True)
             self.fees_var.set("Error")
+            self.slippage_var.set("Error")
+            self.market_impact_var.set("Error")
+            self.net_cost_var.set("Error")
+            self.maker_taker_proportion_var.set("Error")
             self.slippage_var.set("Error")
 
     def _update_ui_from_websocket(self, book_manager, status):
@@ -308,11 +360,18 @@ class TradingSimulatorApp(tk.Tk):
             self.current_spread_var.set("N/A")
             self.fees_var.set("N/A")
             self.slippage_var.set("N/A")
+            self.market_impact_var.set("N/A")
+            self.net_cost_var.set("N/A")
+            self.maker_taker_proportion_var.set("N/A")
             logger.warning("UI updated: Disconnected (Error)")
         elif status == "disconnected_clean":
             self.status_bar_text.set("Status: WebSocket Disconnected.")
             self.is_connected_with_symbol = False
-            self.fees_var.set("N/A"); self.slippage_var.set("N/A")
+            self.fees_var.set("N/A")
+            self.slippage_var.set("N/A")
+            self.market_impact_var.set("N/A")
+            self.net_cost_var.set("N/A")
+            self.maker_taker_proportion_var.set("N/A")
             logger.info("UI updated: Disconnected (Cleanly)")
 
     # --- WebSocket and Shutdown methods remain the same ---
