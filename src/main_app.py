@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.order_book_manager import OrderBookManager
 from src.websocket_handler import connect_and_listen
 # Import new function AND the existing one
-from src.financial_calculations import calculate_expected_fees, calculate_slippage_walk_book 
+from src.financial_calculations import calculate_expected_fees, calculate_slippage_walk_book, calculate_market_impact_cost
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - [%(name)s:%(threadName)s] - %(message)s')
@@ -209,6 +209,19 @@ class TradingSimulatorApp(tk.Tk):
             # 2. Read Input: Fee Tier
             fee_tier_val = self.fee_tier_var.get()
 
+            # 3. Read Input: Volatility
+            try:
+                volatility_val = float(self.volatility_var.get())
+                if volatility_val < 0:
+                     self.market_impact_var.set("Invalid Vol")
+                     return
+            except ValueError:
+                self.market_impact_var.set("Invalid Vol")
+                return
+            
+            # 4. Read Input: Asset Symbol (from fixed var for now)
+            asset_symbol_val = self.spot_asset_var.get()
+
             # --- Calculate Slippage (Walk the Book) ---
             # Requires live order book data, so self.order_book must be up-to-date
             if not self.order_book.asks or not self.order_book.bids: # Check if book has data
@@ -245,8 +258,17 @@ class TradingSimulatorApp(tk.Tk):
             calculated_fees = calculate_expected_fees(quantity_usd_val, fee_tier_val)
             self.fees_var.set(f"{calculated_fees:.4f}")
 
+            # --- Calculate Market Impact Cost ---
+            # Use actual USD spent from slippage calculation if available and valid, else target quantity
+            # For simplicity, assignment implies using the input "Quantity (~100 USD equivalent)"
+            # Let's use quantity_usd_val (target order size) for market impact calculation as well.
+            market_impact_usd = calculate_market_impact_cost(quantity_usd_val, volatility_val, asset_symbol_val)
+            if market_impact_usd is not None:
+                self.market_impact_var.set(f"{market_impact_usd:.4f}")
+            else:
+                self.market_impact_var.set("Error")
+
             # --- Other placeholders ---
-            # self.market_impact_var.set("Calculating...")
             # self.net_cost_var.set("Calculating...")
             # self.maker_taker_proportion_var.set("Calculating...")
             # self.internal_latency_var.set("Calculating...")
@@ -280,9 +302,12 @@ class TradingSimulatorApp(tk.Tk):
         elif status == "disconnected_error":
             self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
             self.is_connected_with_symbol = False
-            self.timestamp_var.set("N/A"); self.current_best_bid_var.set("N/A")
-            self.current_best_ask_var.set("N/A"); self.current_spread_var.set("N/A")
-            self.fees_var.set("N/A"); self.slippage_var.set("N/A")
+            self.timestamp_var.set("N/A"); 
+            self.current_best_bid_var.set("N/A")
+            self.current_best_ask_var.set("N/A")
+            self.current_spread_var.set("N/A")
+            self.fees_var.set("N/A")
+            self.slippage_var.set("N/A")
             logger.warning("UI updated: Disconnected (Error)")
         elif status == "disconnected_clean":
             self.status_bar_text.set("Status: WebSocket Disconnected.")
