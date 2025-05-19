@@ -160,7 +160,7 @@ class TradingSimulatorApp(tk.Tk):
         row_num_output += 1
 
         ttk.Label(self.output_panel, text="Net Cost (USD):").grid(row=row_num_output, column=0, sticky="w", pady=2)
-        ttk.Label(self.output_panel, textvariable=self.net_cost_var, font=("Arial", 10, "bold")).grid(row=row_num_output, column=1, sticky="ew", pady=2) 
+        ttk.Label(self.output_panel, textvariable=self.net_cost_var).grid(row=row_num_output, column=1, sticky="ew", pady=2) 
         row_num_output += 1
         
         ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=10)
@@ -189,6 +189,9 @@ class TradingSimulatorApp(tk.Tk):
         self.after(50, self._recalculate_all_outputs)
 
     def _recalculate_all_outputs(self):
+        # --- Start Latency Measurement ---
+        calc_start_time = time.perf_counter()
+
         # Reset numeric values at the start of each calculation attempt
         self.slippage_percentage_val = None
         self.fee_cost_usd_val = None
@@ -197,24 +200,26 @@ class TradingSimulatorApp(tk.Tk):
         self.actual_asset_traded = None
         self.actual_usd_spent_slippage = None # Important to reset this
 
+        current_latency = "N/A" # Default latency display
+
         try:
             # 1. Read Input: Quantity USD
             try:
                 quantity_usd_val = float(self.quantity_usd_var.get())
                 if quantity_usd_val < 0: # Allow 0 for no trade scenario
-                    self.fees_var.set("Invalid Qty")
-                    self.slippage_var.set("Invalid Qty")
+                    for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var]: 
+                        var.set("Invalid Qty")
                     # Reset stored values
-                    self.avg_execution_price = None
-                    self.actual_asset_traded = None
-                    self.actual_usd_spent_slippage = None
+                    self.avg_execution_price = None #
+                    self.actual_asset_traded = None #
+                    self.actual_usd_spent_slippage = None #
                     return 
             except ValueError:
-                self.fees_var.set("Invalid Qty")
-                self.slippage_var.set("Invalid Qty")
-                self.avg_execution_price = None
-                self.actual_asset_traded = None
-                self.actual_usd_spent_slippage = None
+                for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var]: 
+                    var.set("Invalid Qty")
+                self.avg_execution_price = None #
+                self.actual_asset_traded = None #
+                self.actual_usd_spent_slippage = None #
                 return
 
             # 2. Read Input: Fee Tier
@@ -225,9 +230,11 @@ class TradingSimulatorApp(tk.Tk):
                 volatility_val = float(self.volatility_var.get())
                 if volatility_val < 0:
                      self.market_impact_var.set("Invalid Vol")
+                     self.net_cost_var.set("Invalid Vol");
                      return
             except ValueError:
                 self.market_impact_var.set("Invalid Vol")
+                self.net_cost_var.set("Invalid Vol");
                 return
             
             # 4. Read Input: Asset Symbol (from fixed var for now)
@@ -259,9 +266,8 @@ class TradingSimulatorApp(tk.Tk):
                     # mid_price_snapshot used inside calculate_slippage_walk_book for asset_acquired:
                     if self.order_book.get_best_ask() and self.order_book.get_best_bid():
                         mid_price = (self.order_book.get_best_ask()[0] + self.order_book.get_best_bid()[0]) / 2
-                        if asset_acq > 0 : # if any asset was acquired
-                             value_at_mid = asset_acq * mid_price
-                             slippage_cost_usd = usd_spent - value_at_mid
+                        if asset_acq > 0 : # if any asset was acquired 
+                            slippage_cost_usd = usd_spent - asset_acq * mid_price
                         # If slp_pct is positive (paid more), slippage_cost_usd will be positive.
                     # Alternative simpler slippage cost based on target USD, but less accurate if fill is partial:
                     # slippage_cost_usd = (slp_pct / 100.0) * quantity_usd_val 
@@ -317,9 +323,12 @@ class TradingSimulatorApp(tk.Tk):
                  self.maker_taker_proportion_var.set("N/A (No Trade)")
             else:
                  self.maker_taker_proportion_var.set("100% Taker")
-
-            # --- Other placeholders ---
-            # self.internal_latency_var.set("Calculating...")
+            
+            # --- End Latency Measurement & Update UI ---
+            calc_end_time = time.perf_counter()
+            processing_time_ms = (calc_end_time - calc_start_time) * 1000
+            current_latency = f"{processing_time_ms:.3f}" # Store as string for UI
+            logger.debug(f"Internal processing latency: {processing_time_ms:.3f} ms")
 
         except Exception as e:
             logger.error(f"Error during recalculation: {e}", exc_info=True)
@@ -329,6 +338,10 @@ class TradingSimulatorApp(tk.Tk):
             self.net_cost_var.set("Error")
             self.maker_taker_proportion_var.set("Error")
             self.slippage_var.set("Error")
+        finally:
+            # This ensures latency is updated even if an error occurred mid-calculation,
+            # showing the time taken up to the error point or full calculation.
+            self.internal_latency_var.set(current_latency)
 
     def _update_ui_from_websocket(self, book_manager, status):
         # ... (This method largely stays the same) ...
@@ -354,24 +367,12 @@ class TradingSimulatorApp(tk.Tk):
         elif status == "disconnected_error":
             self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
             self.is_connected_with_symbol = False
-            self.timestamp_var.set("N/A"); 
-            self.current_best_bid_var.set("N/A")
-            self.current_best_ask_var.set("N/A")
-            self.current_spread_var.set("N/A")
-            self.fees_var.set("N/A")
-            self.slippage_var.set("N/A")
-            self.market_impact_var.set("N/A")
-            self.net_cost_var.set("N/A")
-            self.maker_taker_proportion_var.set("N/A")
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+                var.set("N/A")
             logger.warning("UI updated: Disconnected (Error)")
         elif status == "disconnected_clean":
-            self.status_bar_text.set("Status: WebSocket Disconnected.")
-            self.is_connected_with_symbol = False
-            self.fees_var.set("N/A")
-            self.slippage_var.set("N/A")
-            self.market_impact_var.set("N/A")
-            self.net_cost_var.set("N/A")
-            self.maker_taker_proportion_var.set("N/A")
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+                var.set("N/A")
             logger.info("UI updated: Disconnected (Cleanly)")
 
     # --- WebSocket and Shutdown methods remain the same ---
