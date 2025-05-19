@@ -1,107 +1,154 @@
 import tkinter as tk
 from tkinter import ttk # Themed Tkinter widgets
-import tkinter as tk
-from tkinter import ttk # Themed Tkinter widgets
 
 class TradingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
         self.title("GoQuant Trade Simulator")
-        self.geometry("800x600")
+        self.geometry("800x600") # Adjusted for more content
 
-        # --- Tkinter StringVars to hold input values ---
-        self.exchange_var = tk.StringVar(value="OKX") # Fixed
-        self.spot_asset_var = tk.StringVar(value="BTC-USDT-SWAP") # Default, can be changed if WS supports others
-        self.order_type_var = tk.StringVar(value="Market") # Fixed
-        self.quantity_usd_var = tk.StringVar(value="100") # Default
-        self.volatility_var = tk.StringVar(value="0.02") # Example: 2% volatility, needs to be understood from OKX docs
-        self.fee_tier_var = tk.StringVar(value="VIP1") # Example, OKX has tiers like VIP1, LV1 etc.
+        # --- Tkinter StringVars for Input values ---
+        self.exchange_var = tk.StringVar(value="OKX")
+        self.spot_asset_var = tk.StringVar(value="BTC-USDT-SWAP")
+        self.order_type_var = tk.StringVar(value="Market")
+        self.quantity_usd_var = tk.StringVar(value="100")
+        self.volatility_var = tk.StringVar(value="0.02") # Example daily volatility
+        self.fee_tier_var = tk.StringVar() # Will be set by combobox default
+
+        # --- Tkinter StringVars for Output values ---
+        self.slippage_var = tk.StringVar(value="N/A")
+        self.fees_var = tk.StringVar(value="N/A")
+        self.market_impact_var = tk.StringVar(value="N/A")
+        self.net_cost_var = tk.StringVar(value="N/A")
+        self.maker_taker_proportion_var = tk.StringVar(value="N/A")
+        self.internal_latency_var = tk.StringVar(value="N/A")
+        self.current_best_bid_var = tk.StringVar(value="N/A") # For live data display
+        self.current_best_ask_var = tk.StringVar(value="N/A") # For live data display
+        self.current_spread_var = tk.StringVar(value="N/A")   # For live data display
+        self.timestamp_var = tk.StringVar(value="N/A")        # For live data display
 
         # Configure main window grid
         self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1, uniform="group1") # Left panel
-        self.grid_columnconfigure(1, weight=2, uniform="group1") # Right panel (give more space)
+        self.grid_columnconfigure(0, weight=1, uniform="panel_group") 
+        self.grid_columnconfigure(1, weight=2, uniform="panel_group") 
 
         # --- Left Panel (Inputs) ---
         self.input_panel = ttk.LabelFrame(self, text="Input Parameters", padding="10")
         self.input_panel.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.input_panel.grid_columnconfigure(0, weight=0) 
+        self.input_panel.grid_columnconfigure(1, weight=1) 
+
+        row_num_input = 0
+        ttk.Label(self.input_panel, text="Exchange:").grid(row=row_num_input, column=0, sticky="w", pady=3)
+        ttk.Label(self.input_panel, textvariable=self.exchange_var).grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        row_num_input += 1
+
+        ttk.Label(self.input_panel, text="Spot Asset:").grid(row=row_num_input, column=0, sticky="w", pady=3)
+        ttk.Label(self.input_panel, textvariable=self.spot_asset_var).grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        row_num_input += 1
+
+        ttk.Label(self.input_panel, text="Order Type:").grid(row=row_num_input, column=0, sticky="w", pady=3)
+        ttk.Label(self.input_panel, textvariable=self.order_type_var).grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        row_num_input += 1
+
+        ttk.Label(self.input_panel, text="Quantity (USD):").grid(row=row_num_input, column=0, sticky="w", pady=3)
+        ttk.Entry(self.input_panel, textvariable=self.quantity_usd_var).grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        row_num_input += 1
+
+        ttk.Label(self.input_panel, text="Volatility (e.g., 0.02):").grid(row=row_num_input, column=0, sticky="w", pady=3)
+        ttk.Entry(self.input_panel, textvariable=self.volatility_var).grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        row_num_input += 1
         
-        # Configure grid columns for labels and entries within input_panel
-        self.input_panel.grid_columnconfigure(0, weight=0) # Labels
-        self.input_panel.grid_columnconfigure(1, weight=1) # Entries
-
-        # --- Input Widgets ---
-        row_num = 0
-
-        # 1. Exchange
-        ttk.Label(self.input_panel, text="Exchange:").grid(row=row_num, column=0, sticky="w", pady=2)
-        ttk.Label(self.input_panel, textvariable=self.exchange_var).grid(row=row_num, column=1, sticky="ew", pady=2)
-        row_num += 1
-
-        # 2. Spot Asset (Using Entry for now, as the provided WebSocket is specific)
-        ttk.Label(self.input_panel, text="Spot Asset:").grid(row=row_num, column=0, sticky="w", pady=2)
-        # If we were to connect to different assets, this could be an Entry or Combobox
-        # For now, it's tied to the WebSocket URL, so display it.
-        asset_label = ttk.Label(self.input_panel, textvariable=self.spot_asset_var)
-        asset_label.grid(row=row_num, column=1, sticky="ew", pady=2)
-        # ttk.Entry(self.input_panel, textvariable=self.spot_asset_var).grid(row=row_num, column=1, sticky="ew", pady=2)
-        row_num += 1
-
-        # 3. Order Type
-        ttk.Label(self.input_panel, text="Order Type:").grid(row=row_num, column=0, sticky="w", pady=2)
-        ttk.Label(self.input_panel, textvariable=self.order_type_var).grid(row=row_num, column=1, sticky="ew", pady=2)
-        row_num += 1
-
-        # 4. Quantity (USD)
-        ttk.Label(self.input_panel, text="Quantity (USD):").grid(row=row_num, column=0, sticky="w", pady=2)
-        qty_entry = ttk.Entry(self.input_panel, textvariable=self.quantity_usd_var)
-        qty_entry.grid(row=row_num, column=1, sticky="ew", pady=2)
-        row_num += 1
-
-        # 5. Volatility
-        # Note: The definition of "volatility" needs to be clarified from OKX docs.
-        # This could be an annualized volatility (e.g., 0.5 for 50%), daily, or other.
-        # Almgren-Chriss typically uses volatility per unit of time (e.g., daily or per-second).
-        ttk.Label(self.input_panel, text="Volatility (e.g., 0.02 for 2%):").grid(row=row_num, column=0, sticky="w", pady=2)
-        vol_entry = ttk.Entry(self.input_panel, textvariable=self.volatility_var)
-        vol_entry.grid(row=row_num, column=1, sticky="ew", pady=2)
-        row_num += 1
-
-        # 6. Fee Tier
-        # OKX fee tiers can be complex (e.g., based on trading volume, holdings).
-        # For now, a text entry. Could be a Combobox if we have a predefined list.
-        # Example OKX Spot Trading Fee Tiers: Regular users (LV1-LV5), Pro users (VIP1-VIP8)
-        ttk.Label(self.input_panel, text="Fee Tier (e.g., VIP1, LV1):").grid(row=row_num, column=0, sticky="w", pady=2)
-        # OKX Fee Tiers example: https://www.okx.com/fees/spot-coins
-        # Let's use a Combobox with a few common examples
+        ttk.Label(self.input_panel, text="Fee Tier:").grid(row=row_num_input, column=0, sticky="w", pady=3)
         fee_tier_options = ["Regular User LV1", "Regular User LV2", "Regular User LV3", 
-                            "VIP 1", "VIP 2", "VIP 3", "VIP 4", "VIP 5", "VIP 6", "VIP 7", "VIP 8"]
-        fee_tier_combobox = ttk.Combobox(self.input_panel, textvariable=self.fee_tier_var, values=fee_tier_options)
-        fee_tier_combobox.grid(row=row_num, column=1, sticky="ew", pady=2)
-        fee_tier_combobox.set("Regular User LV1") # Set a default from the list
-        row_num += 1
+                            "VIP 1", "VIP 2", "VIP 3", "VIP 4", "VIP 5", "VIP 6", "VIP 7", "VIP 8", "Custom"]
+        fee_tier_combobox = ttk.Combobox(self.input_panel, textvariable=self.fee_tier_var, values=fee_tier_options, state="readonly")
+        fee_tier_combobox.grid(row=row_num_input, column=1, sticky="ew", pady=3)
+        fee_tier_combobox.set("Regular User LV1") 
+        self.fee_tier_var.set("Regular User LV1") # Ensure var is also set
+        row_num_input += 1
         
-        # Add some padding to the last row of input panel to push content up
-        self.input_panel.grid_rowconfigure(row_num, weight=1)
+        self.input_panel.grid_rowconfigure(row_num_input, weight=1) # Push content up
 
 
         # --- Right Panel (Outputs) ---
-        self.output_panel = ttk.LabelFrame(self, text="Processed Outputs", padding="10")
+        self.output_panel = ttk.LabelFrame(self, text="Processed Outputs & Market Data", padding="10")
         self.output_panel.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        # Placeholder for output panel (will be populated in the next stage)
-        # output_label = ttk.Label(self.output_panel, text="Data will appear here...", font=("Arial", 12))
-        # output_label.pack(pady=10, padx=10, anchor="nw")
+        self.output_panel.grid_columnconfigure(0, weight=0) # Labels
+        self.output_panel.grid_columnconfigure(1, weight=1) # Values
+
+        row_num_output = 0
+        
+        # Market Data Section
+        ttk.Label(self.output_panel, text="Market Data:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(0,5))
+        row_num_output += 1
+        
+        ttk.Label(self.output_panel, text="Timestamp:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.timestamp_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Best Bid:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.current_best_bid_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Best Ask:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.current_best_ask_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        
+        ttk.Label(self.output_panel, text="Spread:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.current_spread_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        
+        # Separator
+        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=10)
+        row_num_output +=1
+
+        # Calculated Outputs Section
+        ttk.Label(self.output_panel, text="Transaction Cost Estimates:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Expected Slippage:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.slippage_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Expected Fees:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.fees_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Expected Market Impact:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.market_impact_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Net Cost:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.net_cost_var, font=("Arial", 10, "bold")).grid(row=row_num_output, column=1, sticky="ew", pady=2) # Bold for emphasis
+        row_num_output += 1
+        
+        # Separator
+        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=10)
+        row_num_output +=1
+
+        # Other Metrics Section
+        ttk.Label(self.output_panel, text="Other Metrics:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Maker/Taker Proportion:").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.maker_taker_proportion_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+
+        ttk.Label(self.output_panel, text="Internal Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.internal_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        
+        self.output_panel.grid_rowconfigure(row_num_output, weight=1) # Push content up
 
         # --- Status Bar ---
         self.status_bar_text = tk.StringVar(value="Status: Initializing...")
         self.status_bar = ttk.Label(self, textvariable=self.status_bar_text, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
 
-
     def run(self):
-        """Starts the Tkinter main loop."""
-        self.status_bar_text.set("Status: UI Ready. Waiting for data connection...")
+        self.status_bar_text.set("Status: UI Ready. Connect to WebSocket to see live data.")
         self.mainloop()
 
 if __name__ == "__main__":
