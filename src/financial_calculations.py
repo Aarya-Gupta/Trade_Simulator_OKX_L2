@@ -254,6 +254,10 @@ class SlippageRegressionModel:
             
             if X.ndim == 1: X = X.reshape(-1, 1)
 
+            # --- MODIFIED: Check for sufficient data for split more carefully ---
+            min_test_samples = 1 # We need at least 1 sample in the test set for evaluation
+            min_train_samples = 1 # And at least 1 in the train set
+
             # Ensure there's enough data for a split that results in non-empty train/test sets
             # A common rule is test_size should not lead to test set < 1, and train set should also not be < 1
             if len(X) * self.test_set_size < 1 or len(X) * (1 - self.test_set_size) < 1 :
@@ -266,26 +270,27 @@ class SlippageRegressionModel:
             
             logger.debug(f"Train set size: {len(X_train)}, Test set size: {len(X_test)}") # Add this
 
-            if len(X_train) == 0: 
-                logger.warning("Training set is empty after split. Cannot train.")
+            if len(X_train) < min_train_samples: # Should be caught by above, but as a safeguard
+                logger.warning("Training set is effectively empty ({len(X_train)} samples). Cannot train model.")
                 self.is_trained = False
                 return False
 
             self.model.fit(X_train, y_train)
-            self.is_trained = True
+            self.is_trained = True  # Set only after successful fit.
             self.training_samples_count = len(X_train) # Correctly set here
 
             # --- NEW: Evaluate on test set (if X_test is not same as X_train due to split) ---
-            if X_test is not X_train and len(X_test) > 0 :
+            if len(X_test) > 0 :
                 y_pred_test = self.model.predict(X_test)
                 self.mse = mean_squared_error(y_test, y_pred_test)
                 self.r2 = r2_score(y_test, y_pred_test)
-                logger.info(f"Slippage model trained with {len(X_train)} samples. Test MSE: {self.mse:.10e}, Test R2: {self.r2:.4f}")
-            else: # If trained on all data (no split or test set was empty)
-                y_pred_train = self.model.predict(X_train) # Evaluate on training data
-                self.mse = mean_squared_error(y_train, y_pred_train)
-                self.r2 = r2_score(y_train, y_pred_train)
-                logger.info(f"Slippage model trained with {len(X_train)} samples (evaluated on train). Train MSE: {self.mse:.6f}, Train R2: {self.r2:.4f}")
+                eval_set_type = "Test" if X_test is not X_train else "Train (no split)"
+                logger.info(f"Slippage model trained with {len(X_train)} samples. {eval_set_type} MSE: {self.mse:.10e}, {eval_set_type} R2: {self.r2:.4f}")
+            else:  
+                # Should not happen if checks above are correct
+                logger.warning("Test set was empty, cannot evaluate metrics.")
+                self.mse = None
+                self.r2 = None
 
             return True # Successfully trained
         except Exception as e:
