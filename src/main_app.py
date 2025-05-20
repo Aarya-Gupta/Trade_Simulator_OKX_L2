@@ -11,8 +11,12 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.order_book_manager import OrderBookManager
 from src.websocket_handler import connect_and_listen
-# Import new function AND the existing one
-from src.financial_calculations import calculate_expected_fees, calculate_slippage_walk_book, calculate_market_impact_cost
+from src.financial_calculations import (
+    calculate_expected_fees, 
+    calculate_slippage_walk_book,
+    calculate_market_impact_cost,
+    SlippageRegressionModel # NEW import
+)
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - [%(name)s:%(threadName)s] - %(message)s')
@@ -21,16 +25,23 @@ logger = logging.getLogger(__name__)
 class TradingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        # ... (Most of __init__ remains the same) ...
         self.title("GoQuant Trade Simulator")
         self.geometry("850x650")
+
+        # --- (Core components: OrderBookManager, WebSocket thread management) ---
 
         self.order_book = OrderBookManager()
         self.websocket_thread = None
         self.loop = None
         self.is_connected_with_symbol = False 
 
-        # To store results from slippage calculation for other models
+        # --- Slippage Regression Model ---
+        self.slippage_reg_model = SlippageRegressionModel(min_samples_to_train=500) # Require 50 samples
+        self.ticks_since_last_train = 0
+        self.train_interval_ticks = 100 # Retrain every 100 data updates (ticks)
+        self.probe_order_sizes_usd = [1000, 10000, 100000, 500000, 1e6] # USD sizes for probing
+
+        # --- (Intermediate calculation result storage) ---
         self.avg_execution_price = None
         self.actual_asset_traded = None
         self.actual_usd_spent_slippage = None # USD spent during slippage walk
@@ -38,6 +49,7 @@ class TradingSimulatorApp(tk.Tk):
         self.fee_cost_usd_val = None        # Store numeric fee cost
         self.market_impact_usd_val = None   # Store numeric market impact cost
 
+        # --- (Tkinter StringVars for UI inputs) ---
 
         self.exchange_var = tk.StringVar(value="OKX")
         self.spot_asset_var = tk.StringVar(value="BTC-USDT-SWAP")
@@ -46,18 +58,21 @@ class TradingSimulatorApp(tk.Tk):
         self.volatility_var = tk.StringVar(value="0.02")
         self.fee_tier_var = tk.StringVar() 
 
+        # --- (Tkinter StringVars for UI outputs) ---
+
         self.slippage_var = tk.StringVar(value="N/A") # This will be updated
         self.fees_var = tk.StringVar(value="N/A") 
         self.market_impact_var = tk.StringVar(value="N/A")
         self.net_cost_var = tk.StringVar(value="N/A")
         self.maker_taker_proportion_var = tk.StringVar(value="N/A")
         self.internal_latency_var = tk.StringVar(value="N/A")
-        
         self.timestamp_var = tk.StringVar(value="N/A")
         self.current_best_bid_var = tk.StringVar(value="N/A")
         self.current_best_ask_var = tk.StringVar(value="N/A")
         self.current_spread_var = tk.StringVar(value="N/A")
 
+        # --- (UI setup, WebSocket start, Close protocol) ---
+        
         self._setup_ui()
         self._start_websocket_connection()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -148,7 +163,7 @@ class TradingSimulatorApp(tk.Tk):
         row_num_output += 1
 
         ttk.Label(self.output_panel, text="Expected Slippage (%):").grid(row=row_num_output, column=0, sticky="w", pady=2) # Added (%)
-        ttk.Label(self.output_panel, textvariable=self.slippage_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        ttk.Label(self.output_panel, textvariable=self.slippage_var).grid(row=row_num_output, column=1, sticky="ew", pady=2) # This will now show regression model prediction
         row_num_output += 1
 
         ttk.Label(self.output_panel, text="Expected Fees (USD):").grid(row=row_num_output, column=0, sticky="w", pady=2)
@@ -240,139 +255,259 @@ class TradingSimulatorApp(tk.Tk):
             # 4. Read Input: Asset Symbol (from fixed var for now)
             asset_symbol_val = self.spot_asset_var.get()
 
-            # --- Calculate Slippage (Walk the Book) ---
-            # Requires live order book data, so self.order_book must be up-to-date
-            slippage_cost_usd = 0.0 # Default to 0 if not calculable
-            if not self.order_book.asks or not self.order_book.bids: # Check if book has data
-                self.slippage_var.set("No book data")
-                self.avg_execution_price = None #
-                self.actual_asset_traded = None #
-                self.actual_usd_spent_slippage = None #
-            else:
-                slp_pct, avg_exec_p, asset_acq, usd_spent = calculate_slippage_walk_book(
-                    quantity_usd_val, self.order_book
-                )
-                # Store these values for other calculations (e.g. market impact)
-                self.avg_execution_price = avg_exec_p
-                self.actual_asset_traded = asset_acq
-                self.actual_usd_spent_slippage = usd_spent
+        #     # --- Calculate Slippage (Walk the Book) ---
+        #     # Requires live order book data, so self.order_book must be up-to-date
+        #     slippage_cost_usd = 0.0 # Default to 0 if not calculable
+        #     if not self.order_book.asks or not self.order_book.bids: # Check if book has data
+        #         self.slippage_var.set("No book data")
+        #         self.avg_execution_price = None #
+        #         self.actual_asset_traded = None #
+        #         self.actual_usd_spent_slippage = None #
+        #     else:
+        #         slp_pct, avg_exec_p, asset_acq, usd_spent = calculate_slippage_walk_book(
+        #             quantity_usd_val, self.order_book
+        #         )
+        #         # Store these values for other calculations (e.g. market impact)
+        #         self.avg_execution_price = avg_exec_p
+        #         self.actual_asset_traded = asset_acq
+        #         self.actual_usd_spent_slippage = usd_spent
 
-                if slp_pct is not None:
-                    self.slippage_percentage_val = slp_pct # Store numeric value
-                    self.slippage_var.set(f"{slp_pct:.4f}%")
-                    # Calculate slippage cost in USD.
-                    # Slippage cost is the difference between what you actually paid (usd_spent)
-                    # and what you would have paid at the mid-price for the asset_acquired.
-                    # mid_price_snapshot used inside calculate_slippage_walk_book for asset_acquired:
-                    if self.order_book.get_best_ask() and self.order_book.get_best_bid():
-                        mid_price = (self.order_book.get_best_ask()[0] + self.order_book.get_best_bid()[0]) / 2
-                        if asset_acq > 0 : # if any asset was acquired 
-                            slippage_cost_usd = usd_spent - asset_acq * mid_price
-                        # If slp_pct is positive (paid more), slippage_cost_usd will be positive.
-                    # Alternative simpler slippage cost based on target USD, but less accurate if fill is partial:
-                    # slippage_cost_usd = (slp_pct / 100.0) * quantity_usd_val 
+        #         if slp_pct is not None:
+        #             self.slippage_percentage_val = slp_pct # Store numeric value
+        #             self.slippage_var.set(f"{slp_pct:.4f}%")
+        #             # Calculate slippage cost in USD.
+        #             # Slippage cost is the difference between what you actually paid (usd_spent)
+        #             # and what you would have paid at the mid-price for the asset_acquired.
+        #             # mid_price_snapshot used inside calculate_slippage_walk_book for asset_acquired:
+        #             if self.order_book.get_best_ask() and self.order_book.get_best_bid():
+        #                 mid_price = (self.order_book.get_best_ask()[0] + self.order_book.get_best_bid()[0]) / 2
+        #                 if asset_acq > 0 : # if any asset was acquired 
+        #                     slippage_cost_usd = usd_spent - asset_acq * mid_price
+        #                 # If slp_pct is positive (paid more), slippage_cost_usd will be positive.
+        #             # Alternative simpler slippage cost based on target USD, but less accurate if fill is partial:
+        #             # slippage_cost_usd = (slp_pct / 100.0) * quantity_usd_val 
 
+        #         else:
+        #             if quantity_usd_val > 0 and asset_acq == 0 : # Tried to buy but got nothing
+        #                  self.slippage_var.set("Depth Exceeded?")
+        #             elif quantity_usd_val == 0:
+        #                  self.slippage_var.set("0.0000%") # No slippage for no trade
+        #             else: # Other error cases from slippage function
+        #                  self.slippage_var.set("Error/No Trade")
+        #         logger.debug(f"Slippage: {slp_pct}%, AvgPrice: {avg_exec_p}, Asset: {asset_acq}, Spent: {usd_spent}")
+            
+        #     # --- Calculate Expected Fees ---
+        #     # Fees should ideally be based on the actual USD spent if slippage is significant
+        #     # or if the order couldn't be fully filled for target_usd_val.
+        #     # For now, let's use target quantity_usd_val for simplicity as per problem statement.
+        #     # Or, use self.actual_usd_spent_slippage if available.
+        #     # Let's use quantity_usd_val as it's the "target".
+        #     calculated_fees = calculate_expected_fees(quantity_usd_val, fee_tier_val)
+        #     self.fees_var.set(f"{calculated_fees:.4f}")
+        #     self.fee_cost_usd_val = calculated_fees
+
+        #     # --- Calculate Market Impact Cost ---
+        #     # Use actual USD spent from slippage calculation if available and valid, else target quantity
+        #     # For simplicity, assignment implies using the input "Quantity (~100 USD equivalent)"
+        #     # Let's use quantity_usd_val (target order size) for market impact calculation as well.
+        #     market_impact_usd = calculate_market_impact_cost(quantity_usd_val, volatility_val, asset_symbol_val)
+        #     if market_impact_usd is not None:
+        #         self.market_impact_var.set(f"{market_impact_usd:.4f}")
+        #     else:
+        #         self.market_impact_var.set("Error")
+        #     self.market_impact_usd_val = market_impact_usd
+
+        #     # --- Calculate Net Cost ---
+        #     if self.fee_cost_usd_val is not None and \
+        #        self.market_impact_usd_val is not None and \
+        #        self.slippage_percentage_val is not None: # Check if all components are valid
+                
+        #         # If quantity_usd_val is 0, all costs should be 0
+        #         if quantity_usd_val == 0:
+        #             net_total_cost_usd = 0.0
+        #             slippage_cost_usd = 0.0 # Ensure this is zero for zero quantity
+        #         else:
+        #             net_total_cost_usd = slippage_cost_usd + self.fee_cost_usd_val + self.market_impact_usd_val
+                
+        #         self.net_cost_var.set(f"{net_total_cost_usd:.4f}")
+        #     else:
+        #         self.net_cost_var.set("Error")
+
+        #     # --- Maker/Taker Proportion ---
+        #     if quantity_usd_val == 0:
+        #          self.maker_taker_proportion_var.set("N/A (No Trade)")
+        #     else:
+        #          self.maker_taker_proportion_var.set("100% Taker")
+            
+        #     # --- End Latency Measurement & Update UI ---
+        #     calc_end_time = time.perf_counter()
+        #     processing_time_ms = (calc_end_time - calc_start_time) * 1000
+        #     current_latency = f"{processing_time_ms:.3f}" # Store as string for UI
+        #     logger.debug(f"Internal processing latency: {processing_time_ms:.3f} ms")
+
+        # except Exception as e:
+        #     logger.error(f"Error during recalculation: {e}", exc_info=True)
+        #     self.fees_var.set("Error")
+        #     self.slippage_var.set("Error")
+        #     self.market_impact_var.set("Error")
+        #     self.net_cost_var.set("Error")
+        #     self.maker_taker_proportion_var.set("Error")
+        #     self.slippage_var.set("Error")
+        # finally:
+        #     # This ensures latency is updated even if an error occurred mid-calculation,
+        #     # showing the time taken up to the error point or full calculation.
+        #     self.internal_latency_var.set(current_latency)
+            
+
+            # --- Calculate Slippage (INTEGRATING REGRESSION) ---
+            slippage_cost_usd = 0.0
+            
+            # A. Using Regression Model (Primary for UI display)
+            if self.slippage_reg_model.is_trained and self.order_book.get_best_ask() and self.order_book.get_best_bid():
+                best_ask_price, best_ask_qty = self.order_book.get_best_ask()
+                best_bid_price, _ = self.order_book.get_best_bid()
+                
+                spread_val = best_ask_price - best_bid_price
+                mid_price_for_bps = (best_ask_price + best_bid_price) / 2
+                spread_bps = (spread_val / mid_price_for_bps) * 10000 if mid_price_for_bps > 0 else 0
+                
+                depth_best_ask_usd = best_ask_price * best_ask_qty
+                
+                features_for_prediction = [quantity_usd_val, spread_bps, depth_best_ask_usd]
+                predicted_slippage_pct = self.slippage_reg_model.predict(features_for_prediction)
+                
+                if predicted_slippage_pct is not None:
+                    self.slippage_var.set(f"{predicted_slippage_pct:.4f}% (Reg)")
+                    self.slippage_percentage_val = predicted_slippage_pct # Store this for net cost
+                    # For net cost, we need slippage_cost_usd based on this percentage
+                    slippage_cost_usd = (predicted_slippage_pct / 100.0) * quantity_usd_val
                 else:
-                    if quantity_usd_val > 0 and asset_acq == 0 : # Tried to buy but got nothing
-                         self.slippage_var.set("Depth Exceeded?")
-                    elif quantity_usd_val == 0:
-                         self.slippage_var.set("0.0000%") # No slippage for no trade
-                    else: # Other error cases from slippage function
-                         self.slippage_var.set("Error/No Trade")
-                logger.debug(f"Slippage: {slp_pct}%, AvgPrice: {avg_exec_p}, Asset: {asset_acq}, Spent: {usd_spent}")
+                    self.slippage_var.set("Reg Pred Err")
+            elif quantity_usd_val == 0:
+                 self.slippage_var.set("0.0000%")
+                 self.slippage_percentage_val = 0.0
+            else: # Fallback if model not trained or book data missing for features
+                self.slippage_var.set("N/A (Model Pending)")
+                # Could fall back to walk-the-book for self.slippage_percentage_val if needed for net cost
+                # For now, net cost will show error if regression isn't ready.
+
+            # B. Walk-the-book (Internal reference, or fallback if strict)
+            # We still need its outputs (actual_usd_spent, asset_acquired) for accurate fee/impact on executed value
+            if self.order_book.asks and self.order_book.bids:
+                _, self.avg_execution_price, self.actual_asset_traded, self.actual_usd_spent_slippage = \
+                    calculate_slippage_walk_book(quantity_usd_val, self.order_book)
             
             # --- Calculate Expected Fees ---
-            # Fees should ideally be based on the actual USD spent if slippage is significant
-            # or if the order couldn't be fully filled for target_usd_val.
-            # For now, let's use target quantity_usd_val for simplicity as per problem statement.
-            # Or, use self.actual_usd_spent_slippage if available.
-            # Let's use quantity_usd_val as it's the "target".
-            calculated_fees = calculate_expected_fees(quantity_usd_val, fee_tier_val)
-            self.fees_var.set(f"{calculated_fees:.4f}")
-            self.fee_cost_usd_val = calculated_fees
+            # Use actual_usd_spent_slippage if available and valid for more accuracy, else target quantity_usd_val
+            fee_calc_base_usd = self.actual_usd_spent_slippage if self.actual_usd_spent_slippage is not None and self.actual_usd_spent_slippage > 0 else quantity_usd_val
+            self.fee_cost_usd_val = calculate_expected_fees(fee_calc_base_usd, fee_tier_val)
+            self.fees_var.set(f"{self.fee_cost_usd_val:.4f}")
 
             # --- Calculate Market Impact Cost ---
-            # Use actual USD spent from slippage calculation if available and valid, else target quantity
-            # For simplicity, assignment implies using the input "Quantity (~100 USD equivalent)"
-            # Let's use quantity_usd_val (target order size) for market impact calculation as well.
-            market_impact_usd = calculate_market_impact_cost(quantity_usd_val, volatility_val, asset_symbol_val)
-            if market_impact_usd is not None:
-                self.market_impact_var.set(f"{market_impact_usd:.4f}")
-            else:
-                self.market_impact_var.set("Error")
-            self.market_impact_usd_val = market_impact_usd
+            # Use actual_usd_spent_slippage if available and valid, else target quantity_usd_val
+            impact_calc_base_usd = self.actual_usd_spent_slippage if self.actual_usd_spent_slippage is not None and self.actual_usd_spent_slippage > 0 else quantity_usd_val
+            self.market_impact_usd_val = calculate_market_impact_cost(impact_calc_base_usd, volatility_val, asset_symbol_val)
+            if self.market_impact_usd_val is not None: self.market_impact_var.set(f"{self.market_impact_usd_val:.4f}")
+            else: self.market_impact_var.set("Error")
 
             # --- Calculate Net Cost ---
-            if self.fee_cost_usd_val is not None and \
-               self.market_impact_usd_val is not None and \
-               self.slippage_percentage_val is not None: # Check if all components are valid
-                
-                # If quantity_usd_val is 0, all costs should be 0
-                if quantity_usd_val == 0:
-                    net_total_cost_usd = 0.0
-                    slippage_cost_usd = 0.0 # Ensure this is zero for zero quantity
-                else:
-                    net_total_cost_usd = slippage_cost_usd + self.fee_cost_usd_val + self.market_impact_usd_val
-                
+            # Uses slippage_cost_usd derived from the regression model's percentage
+            if self.fee_cost_usd_val is not None and self.market_impact_usd_val is not None and self.slippage_percentage_val is not None:
+                net_total_cost_usd = (slippage_cost_usd + self.fee_cost_usd_val + self.market_impact_usd_val) if quantity_usd_val > 0 else 0.0
                 self.net_cost_var.set(f"{net_total_cost_usd:.4f}")
-            else:
-                self.net_cost_var.set("Error")
+            else: self.net_cost_var.set("Waiting...") # More informative than "Error" if components are pending
 
             # --- Maker/Taker Proportion ---
-            if quantity_usd_val == 0:
-                 self.maker_taker_proportion_var.set("N/A (No Trade)")
-            else:
-                 self.maker_taker_proportion_var.set("100% Taker")
-            
-            # --- End Latency Measurement & Update UI ---
+            self.maker_taker_proportion_var.set("N/A (No Trade)" if quantity_usd_val == 0 else "100% Taker")
+
             calc_end_time = time.perf_counter()
             processing_time_ms = (calc_end_time - calc_start_time) * 1000
-            current_latency = f"{processing_time_ms:.3f}" # Store as string for UI
-            logger.debug(f"Internal processing latency: {processing_time_ms:.3f} ms")
+            current_latency = f"{processing_time_ms:.3f}"
 
         except Exception as e:
             logger.error(f"Error during recalculation: {e}", exc_info=True)
-            self.fees_var.set("Error")
-            self.slippage_var.set("Error")
-            self.market_impact_var.set("Error")
-            self.net_cost_var.set("Error")
-            self.maker_taker_proportion_var.set("Error")
-            self.slippage_var.set("Error")
+            for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var]: var.set("Error")
         finally:
-            # This ensures latency is updated even if an error occurred mid-calculation,
-            # showing the time taken up to the error point or full calculation.
             self.internal_latency_var.set(current_latency)
 
+    # def _update_ui_from_websocket(self, book_manager, status):
+    #     # ... (This method largely stays the same) ...
+    #     if status == "connected":
+    #         self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data...")
+    #         logger.info("UI updated: Connected")
+    #         self.after(100, self._trigger_recalculation) # Initial calculation after connection
+    #     elif status == "data_update":
+    #         if not self.is_connected_with_symbol and book_manager.symbol:
+    #             self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})")
+    #             self.is_connected_with_symbol = True
+
+    #         self.timestamp_var.set(book_manager.timestamp)
+    #         best_bid = book_manager.get_best_bid()
+    #         self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
+    #         best_ask = book_manager.get_best_ask()
+    #         self.current_best_ask_var.set(f"{best_ask[0]:.2f} ({best_ask[1]:.2f})" if best_ask else "N/A")
+    #         spread = book_manager.get_spread()
+    #         self.current_spread_var.set(f"{spread:.2f}" if spread is not None else "N/A")
+            
+    #         self._recalculate_all_outputs() # Recalculate on each tick
+
+    #     elif status == "disconnected_error":
+    #         self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
+    #         self.is_connected_with_symbol = False
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+    #             var.set("N/A")
+    #         logger.warning("UI updated: Disconnected (Error)")
+    #     elif status == "disconnected_clean":
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+    #             var.set("N/A")
+    #         logger.info("UI updated: Disconnected (Cleanly)")
+
+    # UPDATE UI METHOD (SO AS TO COLLECT DATA FOR REGRESSION MODEL).
     def _update_ui_from_websocket(self, book_manager, status):
-        # ... (This method largely stays the same) ...
         if status == "connected":
             self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data...")
             logger.info("UI updated: Connected")
-            self.after(100, self._trigger_recalculation) # Initial calculation after connection
+            self.after(100, self._trigger_recalculation) 
         elif status == "data_update":
             if not self.is_connected_with_symbol and book_manager.symbol:
                 self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})")
                 self.is_connected_with_symbol = True
-
             self.timestamp_var.set(book_manager.timestamp)
-            best_bid = book_manager.get_best_bid()
-            self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
-            best_ask = book_manager.get_best_ask()
-            self.current_best_ask_var.set(f"{best_ask[0]:.2f} ({best_ask[1]:.2f})" if best_ask else "N/A")
-            spread = book_manager.get_spread()
-            self.current_spread_var.set(f"{spread:.2f}" if spread is not None else "N/A")
-            
-            self._recalculate_all_outputs() # Recalculate on each tick
+            best_bid = book_manager.get_best_bid(); self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
+            best_ask = book_manager.get_best_ask(); self.current_best_ask_var.set(f"{best_ask[0]:.2f} ({best_ask[1]:.2f})" if best_ask else "N/A")
+            spread_val = book_manager.get_spread(); self.current_spread_var.set(f"{spread_val:.2f}" if spread_val is not None else "N/A")
 
-        elif status == "disconnected_error":
-            self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
-            self.is_connected_with_symbol = False
-            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
-                var.set("N/A")
+            # --- NEW: Collect data for regression model ---
+            if best_ask and best_bid: # Ensure we have book data to extract features
+                current_best_ask_price, current_best_ask_qty = best_ask
+                current_best_bid_price, _ = best_bid
+                
+                current_spread_value = current_best_ask_price - current_best_bid_price
+                mid_price_for_bps_calc = (current_best_ask_price + current_best_bid_price) / 2
+                current_spread_bps = (current_spread_value / mid_price_for_bps_calc) * 10000 if mid_price_for_bps_calc > 0 else 0
+                current_depth_best_ask_usd = current_best_ask_price * current_best_ask_qty
+
+                for probe_size_usd in self.probe_order_sizes_usd:
+                    # Simulate this probe order
+                    probe_slippage_pct, _, _, _ = calculate_slippage_walk_book(probe_size_usd, book_manager)
+                    if probe_slippage_pct is not None:
+                        features = [float(probe_size_usd), float(current_spread_bps), float(current_depth_best_ask_usd)]
+                        self.slippage_reg_model.add_data_point(features, probe_slippage_pct)
+                
+                self.ticks_since_last_train += 1
+                if self.ticks_since_last_train >= self.train_interval_ticks:
+                    self.slippage_reg_model.train() # Attempt to train
+                    self.ticks_since_last_train = 0 
+            
+            self._recalculate_all_outputs() # This will now use the regression model if trained
+
+        elif status == "disconnected_error": # Reset all on disconnect
+            self.status_bar_text.set("Status: WebSocket Disconnected (Error)."); self.is_connected_with_symbol = False
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: var.set("N/A")
             logger.warning("UI updated: Disconnected (Error)")
-        elif status == "disconnected_clean":
-            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
-                var.set("N/A")
+        elif status == "disconnected_clean": # Reset all on disconnect
+            self.status_bar_text.set("Status: WebSocket Disconnected."); self.is_connected_with_symbol = False
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: var.set("N/A")
             logger.info("UI updated: Disconnected (Cleanly)")
 
     # --- WebSocket and Shutdown methods remain the same ---

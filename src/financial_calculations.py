@@ -4,7 +4,7 @@
 # will implement pytest later. 
 
 import logging
-from typing import Tuple, Optional # For type hinting
+from typing import Tuple, Optional, List # For type hinting
 
 import sys
 import os 
@@ -12,6 +12,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from .config import OKX_FEE_RATES, DEFAULT_TAKER_FEE_RATE, ASSUMED_DAILY_VOLUME_USD, MARKET_IMPACT_COEFFICIENT
 # We'll need access to the OrderBookManager type for type hinting if not already imported
 # from .order_book_manager import OrderBookManager # Assuming it's in the same directory
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,67 @@ def calculate_market_impact_cost(
     
     return market_impact_cost
 
+# --- CODE for Regression Model ---
+class SlippageRegressionModel:
+    def __init__(self, min_samples_to_train=50, features_dim=3):
+        self.model = LinearRegression()
+        self.is_trained = False
+        self.data_X = [] # List of feature lists
+        self.data_y = [] # List of target slippage percentages
+        self.min_samples_to_train = min_samples_to_train
+        self.features_dim = features_dim # order_size_usd, spread_bps, depth_best_ask_usd
+        logger.info("SlippageRegressionModel initialized.")
+
+    def add_data_point(self, features: List[float], target_slippage_pct: float):
+        if len(features) != self.features_dim:
+            logger.warning(f"Incorrect feature dimension. Expected {self.features_dim}, got {len(features)}")
+            return
+        self.data_X.append(features)
+        self.data_y.append(target_slippage_pct)
+        # Optional: Limit data size to prevent memory issues for long runs
+        # MAX_DATA_POINTS = 1000
+        # if len(self.data_X) > MAX_DATA_POINTS:
+        #     self.data_X.pop(0)
+        #     self.data_y.pop(0)
+
+    def train(self):
+        if len(self.data_X) < self.min_samples_to_train:
+            # logger.debug(f"Not enough samples to train regression model. Have {len(self.data_X)}, need {self.min_samples_to_train}.")
+            self.is_trained = False
+            return False
+        
+        try:
+            X_train = np.array(self.data_X)
+            y_train = np.array(self.data_y)
+            
+            # Reshape X if it's 1D (e.g. if only one feature was used, though we plan for multiple)
+            if X_train.ndim == 1:
+                X_train = X_train.reshape(-1, 1)
+
+            self.model.fit(X_train, y_train)
+            self.is_trained = True
+            logger.info(f"Slippage regression model trained with {len(self.data_X)} samples.")
+            # logger.info(f"Model coefficients: {self.model.coef_}, Intercept: {self.model.intercept_}")
+            return True
+        except Exception as e:
+            logger.error(f"Error training slippage regression model: {e}", exc_info=True)
+            self.is_trained = False
+            return False
+
+    def predict(self, features: List[float]) -> Optional[float]:
+        if not self.is_trained:
+            # logger.debug("Slippage model not trained yet. Cannot predict.")
+            return None
+        if len(features) != self.features_dim:
+            logger.warning(f"Predict: Incorrect feature dimension. Expected {self.features_dim}, got {len(features)}")
+            return None
+            
+        try:
+            prediction = self.model.predict(np.array(features).reshape(1, -1))
+            return prediction[0] # model.predict returns an array
+        except Exception as e:
+            logger.error(f"Error predicting slippage: {e}", exc_info=True)
+            return None
 
 if __name__ == '__main__':
     # Mock OrderBookManager for testing

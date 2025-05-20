@@ -16,7 +16,7 @@ async def connect_and_listen(book_manager, ui_update_callback=None):
     logger.info(f"Attempting to connect to WebSocket: {WEBSOCKET_URL}")
     connection_established = False
     try:
-        async with websockets.connect(WEBSOCKET_URL) as ws:
+        async with websockets.connect(WEBSOCKET_URL, ping_interval=None) as ws:
             websocket_client = ws # Assign to outer scope variable
             connection_established = True
             logger.info("Successfully connected to WebSocket.")
