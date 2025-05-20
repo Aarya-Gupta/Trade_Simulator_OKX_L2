@@ -4,8 +4,7 @@
 # will implement pytest later. 
 
 import logging
-from typing import Tuple, Optional, List # For type hinting
-
+from typing import Tuple, Optional, List, Dict # For type hinting
 import sys
 import os 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -15,10 +14,15 @@ from .config import OKX_FEE_RATES, DEFAULT_TAKER_FEE_RATE, ASSUMED_DAILY_VOLUME_
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
+# --- NEW IMPORTS for Regression Evaluation ---
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+
+
+
 logger = logging.getLogger(__name__)
 
 def calculate_expected_fees(quantity_usd: float, fee_tier: str) -> float:
-    # ... (previous fee calculation code remains the same) ...
     if not isinstance(quantity_usd, (int, float)) or quantity_usd < 0:
         logger.warning(f"Invalid quantity_usd for fee calculation: {quantity_usd}")
         return 0.0
@@ -162,13 +166,19 @@ def calculate_market_impact_cost(
 
 # --- CODE for Regression Model ---
 class SlippageRegressionModel:
-    def __init__(self, min_samples_to_train=50, features_dim=3):
+    def __init__(self, min_samples_to_train=50, features_dim=3, test_set_size=0.2):
         self.model = LinearRegression()
         self.is_trained = False
         self.data_X = [] # List of feature lists
         self.data_y = [] # List of target slippage percentages
         self.min_samples_to_train = min_samples_to_train
         self.features_dim = features_dim # order_size_usd, spread_bps, depth_best_ask_usd
+        self.test_set_size = test_set_size # Proportion of data to use for testing
+        # --- NEW: Metrics storage ---
+        self.mse = None
+        self.r2 = None
+        self.training_samples_count = 0
+
         logger.info("SlippageRegressionModel initialized.")
 
     def add_data_point(self, features: List[float], target_slippage_pct: float):
@@ -183,33 +193,111 @@ class SlippageRegressionModel:
         #     self.data_X.pop(0)
         #     self.data_y.pop(0)
 
-    def train(self):
+    # def train(self) -> bool: # Return type changed to bool
+    #     if len(self.data_X) < self.min_samples_to_train:
+    #         logger.debug(f"Not enough samples to train regression model. Have {len(self.data_X)}, need {self.min_samples_to_train}.")
+    #         self.is_trained = False
+    #         return False
+        
+    #     # try:
+    #     #     X_train = np.array(self.data_X)
+    #     #     y_train = np.array(self.data_y)
+            
+    #     #     # Reshape X if it's 1D (e.g. if only one feature was used, though we plan for multiple)
+    #     #     if X_train.ndim == 1:
+    #     #         X_train = X_train.reshape(-1, 1)
+
+    #     #     self.model.fit(X_train, y_train)
+    #     #     self.is_trained = True
+    #     #     logger.info(f"Slippage regression model trained with {len(self.data_X)} samples.")
+    #     #     # logger.info(f"Model coefficients: {self.model.coef_}, Intercept: {self.model.intercept_}")
+    #     #     return True
+    #     # except Exception as e:
+    #     #     logger.error(f"Error training slippage regression model: {e}", exc_info=True)
+    #     #     self.is_trained = False
+    #     #     return False
+
+    #     try:
+    #         X = np.array(self.data_X)
+    #         y = np.array(self.data_y)
+            
+    #         if X.ndim == 1: X = X.reshape(-1, 1)
+
+    #         # --- NEW: Train-test split ---
+    #         if len(X) * self.test_set_size < 1 : # Ensure test set has at least 1 sample
+    #             # Not enough data for a meaningful split, train on all for now
+    #             X_train, X_test, y_train, y_test = X, X, y, y # Effectively no test set this round
+    #             logger.warning("Not enough data for train-test split, training on all data. Metrics will be on training data.")
+    #         else:
+    #             X_train, X_test, y_train, y_test = train_test_split(
+    #                 X, y, test_size=self.test_set_size, random_state=42 # random_state for reproducibility
+    #             )
+
+    #         if len(X_train) == 0: # Should not happen if min_samples_to_train > 0
+    #             logger.warning("Training set is empty after split. Cannot train.")
+    #             self.is_trained = False
+    #             return False
+
+    #         self.model.fit(X_train, y_train)
+    #         self.is_trained = True
+    #         self.training_samples_count = len(X_train) # Store how many samples were used for this training
+    def train(self) -> bool: 
+        logger.debug(f"Train called. Total data points available: {len(self.data_X)}") # Add this
         if len(self.data_X) < self.min_samples_to_train:
-            # logger.debug(f"Not enough samples to train regression model. Have {len(self.data_X)}, need {self.min_samples_to_train}.")
+            logger.debug(f"Not enough samples to train. Have {len(self.data_X)}, need {self.min_samples_to_train}.") # Add this
             self.is_trained = False
-            return False
+            return False 
         
         try:
-            X_train = np.array(self.data_X)
-            y_train = np.array(self.data_y)
+            X = np.array(self.data_X)
+            y = np.array(self.data_y)
             
-            # Reshape X if it's 1D (e.g. if only one feature was used, though we plan for multiple)
-            if X_train.ndim == 1:
-                X_train = X_train.reshape(-1, 1)
+            if X.ndim == 1: X = X.reshape(-1, 1)
+
+            # Ensure there's enough data for a split that results in non-empty train/test sets
+            # A common rule is test_size should not lead to test set < 1, and train set should also not be < 1
+            if len(X) * self.test_set_size < 1 or len(X) * (1 - self.test_set_size) < 1 :
+                logger.warning(f"Not enough data for a meaningful train-test split (Total: {len(X)}). Training on all data. Metrics will be on training data.")
+                X_train, X_test, y_train, y_test = X, X, y, y 
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=self.test_set_size, random_state=42
+                )
+            
+            logger.debug(f"Train set size: {len(X_train)}, Test set size: {len(X_test)}") # Add this
+
+            if len(X_train) == 0: 
+                logger.warning("Training set is empty after split. Cannot train.")
+                self.is_trained = False
+                return False
 
             self.model.fit(X_train, y_train)
             self.is_trained = True
-            logger.info(f"Slippage regression model trained with {len(self.data_X)} samples.")
-            # logger.info(f"Model coefficients: {self.model.coef_}, Intercept: {self.model.intercept_}")
-            return True
+            self.training_samples_count = len(X_train) # Correctly set here
+
+            # --- NEW: Evaluate on test set (if X_test is not same as X_train due to split) ---
+            if X_test is not X_train and len(X_test) > 0 :
+                y_pred_test = self.model.predict(X_test)
+                self.mse = mean_squared_error(y_test, y_pred_test)
+                self.r2 = r2_score(y_test, y_pred_test)
+                logger.info(f"Slippage model trained with {len(X_train)} samples. Test MSE: {self.mse:.10e}, Test R2: {self.r2:.4f}")
+            else: # If trained on all data (no split or test set was empty)
+                y_pred_train = self.model.predict(X_train) # Evaluate on training data
+                self.mse = mean_squared_error(y_train, y_pred_train)
+                self.r2 = r2_score(y_train, y_pred_train)
+                logger.info(f"Slippage model trained with {len(X_train)} samples (evaluated on train). Train MSE: {self.mse:.6f}, Train R2: {self.r2:.4f}")
+
+            return True # Successfully trained
         except Exception as e:
             logger.error(f"Error training slippage regression model: {e}", exc_info=True)
             self.is_trained = False
-            return False
+            self.mse = None # Reset metrics on error
+            self.r2 = None
+            return False # Training failed
 
     def predict(self, features: List[float]) -> Optional[float]:
         if not self.is_trained:
-            # logger.debug("Slippage model not trained yet. Cannot predict.")
+            logger.debug("Slippage model not trained yet. Cannot predict.")
             return None
         if len(features) != self.features_dim:
             logger.warning(f"Predict: Incorrect feature dimension. Expected {self.features_dim}, got {len(features)}")
@@ -221,6 +309,14 @@ class SlippageRegressionModel:
         except Exception as e:
             logger.error(f"Error predicting slippage: {e}", exc_info=True)
             return None
+    
+    # --- NEW: Getter methods for metrics ---
+    def get_metrics(self) -> Dict[str, Optional[float]]:
+        return {
+            "mse": self.mse,
+            "r2": self.r2,
+            "training_samples": float(self.training_samples_count) if self.is_trained else 0.0
+        }
 
 if __name__ == '__main__':
     # Mock OrderBookManager for testing
@@ -243,44 +339,22 @@ if __name__ == '__main__':
     print("--- Testing Fee Calculation ---")
     print(f"Fee for 100 USD, Regular User LV1: {calculate_expected_fees(100, 'Regular User LV1')} USD")
     
-    print("\n--- Testing Slippage Calculation ---")
-    # Test case 1: Simple book, full fill within one level
     book1 = MockOrderBookManager(asks=[(101, 10), (102, 5)], bids=[(100, 10)])
-    # Mid price = (101+100)/2 = 100.5
-    # Target spend 101 USD -> buy 1 BTC at 101. Avg exec = 101.
-    # Slippage = (101 - 100.5) / 100.5 * 100 = 0.4975%
     slp1, avg_p1, ast1, usd1 = calculate_slippage_walk_book(101, book1)
-    print(f"Test 1 (Spend 101 USD): Slippage={slp1:.4f}%, AvgPrice={avg_p1:.2f}, Asset={ast1:.2f}, SpentUSD={usd1:.2f}")
-
-    # Test case 2: Spend across multiple levels
-    book2 = MockOrderBookManager(asks=[(101, 2), (102, 3), (103, 5)], bids=[(100, 10)])
-    # Mid price = 100.5
-    # Target spend 400 USD:
-    # Level 1: 2 BTC @ 101 = 202 USD spent, 2 BTC acquired
-    # Level 2: 3 BTC @ 102 = 306 USD. Remaining to spend: 400-202 = 198 USD. Can't take full level.
-    #   Buy 198/102 = 1.941176 BTC @ 102.
-    # Total asset = 2 + 1.941176 = 3.941176
-    # Total USD spent = 202 + 198 = 400
-    # Avg exec price = 400 / 3.941176 = 101.4925
-    # Slippage = (101.4925 - 100.5) / 100.5 * 100 = 0.9875%
-    slp2, avg_p2, ast2, usd2 = calculate_slippage_walk_book(400, book2)
-    print(f"Test 2 (Spend 400 USD): Slippage={slp2:.4f}%, AvgPrice={avg_p2:.2f}, Asset={ast2:.4f}, SpentUSD={usd2:.2f}")
-
-    # Test case 3: Insufficient liquidity
-    # Target spend 1000 USD, but only (2*101 + 3*102 + 5*103) = 202 + 306 + 515 = 1023 USD available depth
-    # Actually, it's more like: 2@101 (202), 3@102 (306), 5@103 (515). Total asset 10. Total value 1023.
-    # If we spend 1500 USD, we'll exhaust the book.
-    slp3, avg_p3, ast3, usd3 = calculate_slippage_walk_book(1500, book2)
-    # Expected: total_asset_acquired = 2+3+5 = 10. total_usd_spent = 101*2 + 102*3 + 103*5 = 202+306+515 = 1023
-    # avg_exec_price = 1023 / 10 = 102.3
-    # slippage = (102.3 - 100.5) / 100.5 * 100 = 1.7910%
-    print(f"Test 3 (Spend 1500 USD, exhaust book): Slippage={slp3:.4f}%, AvgPrice={avg_p3:.2f}, Asset={ast3:.2f}, SpentUSD={usd3:.2f}")
-
-    # Test case 4: Zero USD spend
-    slp4, avg_p4, ast4, usd4 = calculate_slippage_walk_book(0, book1)
-    print(f"Test 4 (Spend 0 USD): Slippage={slp4}, AvgPrice={avg_p4}, Asset={ast4}, SpentUSD={usd4}")
-
-    # Test case 5: Empty asks
-    book5 = MockOrderBookManager(asks=[], bids=[(100,10)])
-    slp5, avg_p5, ast5, usd5 = calculate_slippage_walk_book(100, book5)
-    print(f"Test 5 (Empty asks): Slippage={slp5}, AvgPrice={avg_p5}, Asset={ast5}, SpentUSD={usd5}")
+    print(f"Test Slippage 1: Slippage={slp1:.4f}%, AvgPrice={avg_p1:.2f}, Asset={ast1:.2f}, SpentUSD={usd1:.2f}")
+    impact1 = calculate_market_impact_cost(order_quantity_usd=10000, asset_volatility=0.02, asset_symbol="BTC-USDT-SWAP")
+    print(f"Test Impact 1 (10k USD order, 2% vol): Impact Cost = {impact1:.4f} USD") 
+    print("\n--- Testing Slippage Regression Model ---")
+    reg_model = SlippageRegressionModel(min_samples_to_train=2)
+    reg_model.add_data_point(features=[1000, 1.0, 100000], target_slippage_pct=0.01)
+    reg_model.add_data_point(features=[2000, 1.2, 80000], target_slippage_pct=0.03)
+    reg_model.add_data_point(features=[500, 0.8, 120000], target_slippage_pct=0.005) # More data for split
+    reg_model.add_data_point(features=[2500, 1.5, 70000], target_slippage_pct=0.04)
+    reg_model.add_data_point(features=[1200, 0.9, 110000], target_slippage_pct=0.015)
+    print(f"Training possible: {reg_model.train()}")
+    print(f"Model trained: {reg_model.is_trained}")
+    if reg_model.is_trained:
+        prediction1 = reg_model.predict(features=[1500, 1.1, 90000])
+        print(f"Prediction for [1500, 1.1, 90000]: {prediction1}")
+        metrics = reg_model.get_metrics()
+        print(f"Model Metrics: MSE={metrics.get('mse', 'N/A')}, R2={metrics.get('r2', 'N/A')}, Samples={metrics.get('training_samples', 'N/A')}")

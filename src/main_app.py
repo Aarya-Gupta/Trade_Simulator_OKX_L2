@@ -5,7 +5,9 @@ import threading
 import asyncio
 import logging
 import time
+import csv # NEW import for CSV logging
 
+# --- (Imports from our src modules, including SlippageRegressionModel) ---
 import sys
 import os 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -15,12 +17,26 @@ from src.financial_calculations import (
     calculate_expected_fees, 
     calculate_slippage_walk_book,
     calculate_market_impact_cost,
-    SlippageRegressionModel # NEW import
+    SlippageRegressionModel 
 )
 
+# --- (Logging setup) ---
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - [%(name)s:%(threadName)s] - %(message)s')
 logger = logging.getLogger(__name__)
+
+# --- NEW: CSV File for logging regression data ---
+REGRESSION_DATA_LOG_FILE = "slippage_regression_log.csv"
+# Write header if file doesn't exist or is empty
+if not os.path.exists(REGRESSION_DATA_LOG_FILE) or os.path.getsize(REGRESSION_DATA_LOG_FILE) == 0:
+    with open(REGRESSION_DATA_LOG_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "timestamp_data_collected", "probe_order_size_usd", "market_spread_bps", 
+            "market_depth_best_ask_usd", "true_slippage_pct_walk_the_book",
+            "is_model_trained_at_prediction", "user_order_size_usd", 
+            "predicted_slippage_pct_regression"
+        ])
 
 class TradingSimulatorApp(tk.Tk):
     def __init__(self):
@@ -36,10 +52,10 @@ class TradingSimulatorApp(tk.Tk):
         self.is_connected_with_symbol = False 
 
         # --- Slippage Regression Model ---
-        self.slippage_reg_model = SlippageRegressionModel(min_samples_to_train=500) # Require 50 samples
+        self.slippage_reg_model = SlippageRegressionModel(min_samples_to_train=1000, test_set_size=0.2) # Train with more samples (500)
         self.ticks_since_last_train = 0
-        self.train_interval_ticks = 100 # Retrain every 100 data updates (ticks)
-        self.probe_order_sizes_usd = [1000, 10000, 100000, 500000, 1e6] # USD sizes for probing
+        self.train_interval_ticks = 200 # Retrain every 200 data updates (generating 200 * num_probes data points)
+        self.probe_order_sizes_usd = [1000, 5000, 10000, 50000, 100000, 500000, 1e6] # USD sizes for probing
 
         # --- (Intermediate calculation result storage) ---
         self.avg_execution_price = None
@@ -70,9 +86,13 @@ class TradingSimulatorApp(tk.Tk):
         self.current_best_bid_var = tk.StringVar(value="N/A")
         self.current_best_ask_var = tk.StringVar(value="N/A")
         self.current_spread_var = tk.StringVar(value="N/A")
+        # --- NEW StringVars for regression metrics ---
+        self.reg_mse_var = tk.StringVar(value="N/A")
+        self.reg_r2_var = tk.StringVar(value="N/A")
+        self.reg_samples_var = tk.StringVar(value="N/A")
 
         # --- (UI setup, WebSocket start, Close protocol) ---
-        
+
         self._setup_ui()
         self._start_websocket_connection()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -156,7 +176,7 @@ class TradingSimulatorApp(tk.Tk):
         ttk.Label(self.output_panel, textvariable=self.current_spread_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
         row_num_output += 1
         
-        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=10)
+        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=5) # Reduced pady
         row_num_output +=1
 
         ttk.Label(self.output_panel, text="Transaction Cost Estimates:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
@@ -178,7 +198,7 @@ class TradingSimulatorApp(tk.Tk):
         ttk.Label(self.output_panel, textvariable=self.net_cost_var).grid(row=row_num_output, column=1, sticky="ew", pady=2) 
         row_num_output += 1
         
-        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=10)
+        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=5)
         row_num_output +=1
 
         ttk.Label(self.output_panel, text="Other Metrics:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
@@ -190,6 +210,18 @@ class TradingSimulatorApp(tk.Tk):
 
         ttk.Label(self.output_panel, text="Internal Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2)
         ttk.Label(self.output_panel, textvariable=self.internal_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        
+        # --- NEW: Regression Model Metrics UI ---
+        ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=5)
+        row_num_output +=1 # Reduced pady
+        ttk.Label(self.output_panel, text="Slippage Model Perf.:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
+        row_num_output += 1
+        ttk.Label(self.output_panel, text="Train Samples:").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.reg_samples_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        ttk.Label(self.output_panel, text="Test MSE:").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.reg_mse_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
+        row_num_output += 1
+        ttk.Label(self.output_panel, text="Test R2 Score:").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.reg_r2_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
         row_num_output += 1
         
         self.output_panel.grid_rowconfigure(row_num_output, weight=1)
@@ -216,19 +248,14 @@ class TradingSimulatorApp(tk.Tk):
         self.actual_usd_spent_slippage = None # Important to reset this
 
         current_latency = "N/A" # Default latency display
+        predicted_slippage_pct_for_log = None # For CSV logging
 
         try:
             # 1. Read Input: Quantity USD
             try:
                 quantity_usd_val = float(self.quantity_usd_var.get())
                 if quantity_usd_val < 0: # Allow 0 for no trade scenario
-                    for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var]: 
-                        var.set("Invalid Qty")
-                    # Reset stored values
-                    self.avg_execution_price = None #
-                    self.actual_asset_traded = None #
-                    self.actual_usd_spent_slippage = None #
-                    return 
+                    raise ValueError
             except ValueError:
                 for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var]: 
                     var.set("Invalid Qty")
@@ -244,9 +271,7 @@ class TradingSimulatorApp(tk.Tk):
             try:
                 volatility_val = float(self.volatility_var.get())
                 if volatility_val < 0:
-                     self.market_impact_var.set("Invalid Vol")
-                     self.net_cost_var.set("Invalid Vol");
-                     return
+                    raise ValueError
             except ValueError:
                 self.market_impact_var.set("Invalid Vol")
                 self.net_cost_var.set("Invalid Vol");
@@ -375,12 +400,15 @@ class TradingSimulatorApp(tk.Tk):
                 
                 features_for_prediction = [quantity_usd_val, spread_bps, depth_best_ask_usd]
                 predicted_slippage_pct = self.slippage_reg_model.predict(features_for_prediction)
-                
+                predicted_slippage_pct_for_log = predicted_slippage_pct # For CSV
+
                 if predicted_slippage_pct is not None:
-                    self.slippage_var.set(f"{predicted_slippage_pct:.4f}% (Reg)")
-                    self.slippage_percentage_val = predicted_slippage_pct # Store this for net cost
+                    # --- NEW: Cap negative slippage prediction for BUY orders at 0 ---
+                    effective_predicted_slippage_pct = max(0.0, predicted_slippage_pct)
+                    self.slippage_var.set(f"{effective_predicted_slippage_pct:.4f}% (Reg)")
+                    self.slippage_percentage_val = effective_predicted_slippage_pct # Store this for net cost
                     # For net cost, we need slippage_cost_usd based on this percentage
-                    slippage_cost_usd = (predicted_slippage_pct / 100.0) * quantity_usd_val
+                    slippage_cost_usd = (effective_predicted_slippage_pct / 100.0) * quantity_usd_val
                 else:
                     self.slippage_var.set("Reg Pred Err")
             elif quantity_usd_val == 0:
@@ -420,13 +448,44 @@ class TradingSimulatorApp(tk.Tk):
             # --- Maker/Taker Proportion ---
             self.maker_taker_proportion_var.set("N/A (No Trade)" if quantity_usd_val == 0 else "100% Taker")
 
+            # --- NEW: Update Regression Metrics UI ---
+            metrics = self.slippage_reg_model.get_metrics()
+            self.reg_samples_var.set(f"{metrics.get('training_samples', 0.0):.0f}")
+            self.reg_mse_var.set(f"{metrics.get('mse', float('nan')):.6f}" if metrics.get('mse') is not None else "N/A")
+            self.reg_r2_var.set(f"{metrics.get('r2', float('nan')):.4f}" if metrics.get('r2') is not None else "N/A")
+
             calc_end_time = time.perf_counter()
             processing_time_ms = (calc_end_time - calc_start_time) * 1000
             current_latency = f"{processing_time_ms:.3f}"
 
+            # --- NEW: Log data for user's current prediction to CSV ---
+            # This logs the features for the user's actual order and the model's prediction for it.
+            # It does NOT log the probe data here, that's implicit in the model's training data.
+            if self.slippage_reg_model.is_trained and self.order_book.get_best_ask(): # Check if features are available
+                 # Re-extract features for user's current order size for logging consistency
+                best_ask_price_log, best_ask_qty_log = self.order_book.get_best_ask()
+                best_bid_price_log, _ = self.order_book.get_best_bid() if self.order_book.get_best_bid() else (0,0)
+                spread_val_log = best_ask_price_log - best_bid_price_log
+                mid_price_for_bps_log = (best_ask_price_log + best_bid_price_log) / 2
+                spread_bps_log = (spread_val_log / mid_price_for_bps_log) * 10000 if mid_price_for_bps_log > 0 else 0
+                depth_best_ask_usd_log = best_ask_price_log * best_ask_qty_log
+
+                with open(REGRESSION_DATA_LOG_FILE, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        time.strftime('%Y-%m-%dT%H:%M:%S'), # timestamp_data_collected (approximate)
+                        None, # probe_order_size_usd (N/A for user prediction row)
+                        None, # market_spread_bps (N/A for user prediction row - features for probes are not re-logged here)
+                        None, # market_depth_best_ask_usd (N/A for user prediction row)
+                        None, # true_slippage_pct_walk_the_book (N/A for user prediction row)
+                        self.slippage_reg_model.is_trained,
+                        quantity_usd_val, # user_order_size_usd
+                        predicted_slippage_pct_for_log # predicted_slippage_pct_regression for user's order
+                    ])
+
         except Exception as e:
-            logger.error(f"Error during recalculation: {e}", exc_info=True)
-            for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var]: var.set("Error")
+            logger.error(f"Error during recalculation: {e}", exc_info=True) # error handling
+            for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("Error")
         finally:
             self.internal_latency_var.set(current_latency)
 
@@ -463,53 +522,171 @@ class TradingSimulatorApp(tk.Tk):
     #         logger.info("UI updated: Disconnected (Cleanly)")
 
     # UPDATE UI METHOD (SO AS TO COLLECT DATA FOR REGRESSION MODEL).
+    # def _update_ui_from_websocket(self, book_manager, status):
+    #     if status == "connected":
+    #         self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data...")
+    #         logger.info("UI updated: Connected")
+    #         self.after(100, self._trigger_recalculation) 
+    #     elif status == "data_update":
+    #         if not self.is_connected_with_symbol and book_manager.symbol:
+    #             self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})")
+    #             self.is_connected_with_symbol = True
+    #         self.timestamp_var.set(book_manager.timestamp)
+    #         best_bid = book_manager.get_best_bid(); self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
+    #         best_ask = book_manager.get_best_ask(); self.current_best_ask_var.set(f"{best_ask[0]:.2f} ({best_ask[1]:.2f})" if best_ask else "N/A")
+    #         spread_val = book_manager.get_spread(); self.current_spread_var.set(f"{spread_val:.2f}" if spread_val is not None else "N/A")
+
+    #         # --- NEW: Collect data for regression model and periodic training---
+    #         if best_ask and best_bid: # Ensure we have book data to extract features
+    #             if best_ask[0] > best_bid[0]: # Only generate probe data if book is NOT crossed
+    #                 # Only letting the valid entries to be registered in the CSV file, 
+    #                 # so that quality data training takes place for regression.
+    #                 current_best_ask_price, current_best_ask_qty = best_ask
+    #                 current_best_bid_price, _ = best_bid
+                    
+    #                 current_spread_value = current_best_ask_price - current_best_bid_price
+    #                 mid_price_for_bps_calc = (current_best_ask_price + current_best_bid_price) / 2
+    #                 current_spread_bps = (current_spread_value / mid_price_for_bps_calc) * 10000 if mid_price_for_bps_calc > 0 else 0
+    #                 current_depth_best_ask_usd = current_best_ask_price * current_best_ask_qty
+
+    #                 for probe_size_usd in self.probe_order_sizes_usd:
+    #                     # Simulate this probe order
+    #                     probe_slippage_pct, _, _, _ = calculate_slippage_walk_book(probe_size_usd, book_manager)
+    #                     logger.debug(f"Probe: {probe_size_usd} USD, True Slippage: {probe_slippage_pct}") # TEMPORARY LOG
+    #                     if probe_slippage_pct is not None:
+    #                         features = [float(probe_size_usd), float(current_spread_bps), float(current_depth_best_ask_usd)]
+    #                         self.slippage_reg_model.add_data_point(features, probe_slippage_pct)
+    #                         # --- NEW: Log probe data to CSV ---
+    #                         with open(REGRESSION_DATA_LOG_FILE, 'a', newline='') as f:
+    #                             writer = csv.writer(f)
+    #                             writer.writerow([
+    #                                 time.strftime('%Y-%m-%dT%H:%M:%S'), # timestamp_data_collected
+    #                                 probe_size_usd,
+    #                                 current_spread_bps,
+    #                                 current_depth_best_ask_usd,
+    #                                 probe_slippage_pct, # true_slippage_pct_walk_the_book for this probe
+    #                                 None, # is_model_trained_at_prediction (N/A for probe row)
+    #                                 None, # user_order_size_usd (N/A for probe row)
+    #                                 None  # predicted_slippage_pct_regression (N/A for probe row)
+    #                             ])
+                
+    #             self.ticks_since_last_train += 1 # Counts WebSocket updates, not individual data points
+    #             # Check if enough total data points collected for initial training OR if it's time for retraining
+    #             total_data_points = len(self.slippage_reg_model.data_X)
+    #             ready_for_initial_train = not self.slippage_reg_model.is_trained and total_data_points >= self.slippage_reg_model.min_samples_to_train
+    #             time_for_retrain = self.slippage_reg_model.is_trained and self.ticks_since_last_train >= (self.train_interval_ticks // (len(self.probe_order_sizes_usd) if len(self.probe_order_sizes_usd) > 0 else 1))
+
+
+    #             if ready_for_initial_train or time_for_retrain:
+    #                 if self.slippage_reg_model.train(): 
+    #                     logger.info(f"Model re-trained. Updating metrics.")
+    #                 self.ticks_since_last_train = 0 
+    #             else:
+    #                 logger.warning(f"Book crossed: Best Ask {best_ask[0]} <= Best Bid {best_bid[0]}. Skipping probe data generation for this tick.")
+
+    #             # # if self.ticks_since_last_train >= self.train_interval_ticks:
+    #             # #     self.slippage_reg_model.train() # Attempt to train
+    #             # #     self.ticks_since_last_train = 0 
+    #             # if self.ticks_since_last_train * len(self.probe_order_sizes_usd) >= self.slippage_reg_model.min_samples_to_train and \
+    #             #    self.ticks_since_last_train % (self.train_interval_ticks // len(self.probe_order_sizes_usd) if len(self.probe_order_sizes_usd) > 0 else self.train_interval_ticks) == 0 : # ensure train interval is also met
+    #             #     if self.slippage_reg_model.train(): # Attempt to train
+    #             #         logger.info(f"Model re-trained. Updating metrics.")
+    #             #     self.ticks_since_last_train = 0 
+
+    #         self._recalculate_all_outputs() # This will now use the regression model if trained
+
+    #     elif status == "disconnected_error": # ... (Clearing UI including new metric fields) ...
+    #         self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
+    #         self.is_connected_with_symbol = False
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+    #         logger.warning("UI updated: Disconnected (Error)")
+    #     elif status == "disconnected_clean": # ... (Clearing UI including new metric fields) ...
+    #         self.status_bar_text.set("Status: WebSocket Disconnected.")
+    #         self.is_connected_with_symbol = False
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+    #         logger.info("UI updated: Disconnected (Cleanly)")
+
+    # --- MODIFIED _update_ui_from_websocket method ---
     def _update_ui_from_websocket(self, book_manager, status):
-        if status == "connected":
-            self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data...")
-            logger.info("UI updated: Connected")
-            self.after(100, self._trigger_recalculation) 
+        if status == "connected": 
+            self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data..."); logger.info("UI updated: Connected"); self.after(100, self._trigger_recalculation) 
         elif status == "data_update":
-            if not self.is_connected_with_symbol and book_manager.symbol:
-                self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})")
-                self.is_connected_with_symbol = True
+            if not self.is_connected_with_symbol and book_manager.symbol: self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})"); self.is_connected_with_symbol = True
             self.timestamp_var.set(book_manager.timestamp)
             best_bid = book_manager.get_best_bid(); self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
             best_ask = book_manager.get_best_ask(); self.current_best_ask_var.set(f"{best_ask[0]:.2f} ({best_ask[1]:.2f})" if best_ask else "N/A")
             spread_val = book_manager.get_spread(); self.current_spread_var.set(f"{spread_val:.2f}" if spread_val is not None else "N/A")
 
-            # --- NEW: Collect data for regression model ---
-            if best_ask and best_bid: # Ensure we have book data to extract features
-                current_best_ask_price, current_best_ask_qty = best_ask
-                current_best_bid_price, _ = best_bid
+            # --- Data Collection for Regression & Periodic Training ---
+            if best_ask and best_bid: # Ensure we have basic book data
                 
-                current_spread_value = current_best_ask_price - current_best_bid_price
-                mid_price_for_bps_calc = (current_best_ask_price + current_best_bid_price) / 2
-                current_spread_bps = (current_spread_value / mid_price_for_bps_calc) * 10000 if mid_price_for_bps_calc > 0 else 0
-                current_depth_best_ask_usd = current_best_ask_price * current_best_ask_qty
+                # --- RIGOROUS CHECK FOR CROSSED BOOK ---
+                # Recalculate best_ask_price and best_bid_price directly from book_manager for this check
+                # to avoid using potentially stale `best_ask` or `best_bid` from above if updates are rapid.
+                current_ba_tuple = book_manager.get_best_ask()
+                current_bb_tuple = book_manager.get_best_bid()
 
-                for probe_size_usd in self.probe_order_sizes_usd:
-                    # Simulate this probe order
-                    probe_slippage_pct, _, _, _ = calculate_slippage_walk_book(probe_size_usd, book_manager)
-                    if probe_slippage_pct is not None:
-                        features = [float(probe_size_usd), float(current_spread_bps), float(current_depth_best_ask_usd)]
-                        self.slippage_reg_model.add_data_point(features, probe_slippage_pct)
-                
-                self.ticks_since_last_train += 1
-                if self.ticks_since_last_train >= self.train_interval_ticks:
-                    self.slippage_reg_model.train() # Attempt to train
-                    self.ticks_since_last_train = 0 
+                if current_ba_tuple and current_bb_tuple and current_ba_tuple[0] > current_bb_tuple[0]: 
+                    # Book is NOT crossed, proceed with probe data generation
+                    current_best_ask_price, current_best_ask_qty = current_ba_tuple
+                    current_best_bid_price, _ = current_bb_tuple
+                    
+                    current_spread_value = current_best_ask_price - current_best_bid_price 
+                    mid_price_for_bps_calc = (current_best_ask_price + current_best_bid_price) / 2
+                    current_spread_bps = (current_spread_value / mid_price_for_bps_calc) * 10000 if mid_price_for_bps_calc > 0 else 0
+                    current_depth_best_ask_usd = current_best_ask_price * current_best_ask_qty
+
+                    # Additional check: Ensure spread_bps is not negative due to float issues if very close
+                    if current_spread_bps < 0:
+                        logger.warning(f"Calculated negative spread_bps ({current_spread_bps:.4f}) even after checking ask > bid. Ask: {current_best_ask_price}, Bid: {current_best_bid_price}. Skipping probes.")
+                    else:
+                        for probe_size_usd in self.probe_order_sizes_usd:
+                            probe_slippage_pct, _, _, _ = calculate_slippage_walk_book(probe_size_usd, book_manager) # book_manager is up-to-date
+                            if probe_slippage_pct is not None:
+                                features = [float(probe_size_usd), float(current_spread_bps), float(current_depth_best_ask_usd)]
+                                self.slippage_reg_model.add_data_point(features, probe_slippage_pct)
+                                
+                                # Log probe data to CSV
+                                with open(REGRESSION_DATA_LOG_FILE, 'a', newline='') as f:
+                                    writer = csv.writer(f)
+                                    writer.writerow([
+                                        time.strftime('%Y-%m-%dT%H:%M:%S'), probe_size_usd,
+                                        current_spread_bps, current_depth_best_ask_usd, probe_slippage_pct,
+                                        None, None, None 
+                                    ])
+                        
+                        self.ticks_since_last_train += 1 
+                        total_data_points = len(self.slippage_reg_model.data_X) # Get current total data points
+                        
+                        # Check conditions for training
+                        # Condition 1: Model is not yet trained AND we have enough samples for the first train
+                        ready_for_initial_train = (not self.slippage_reg_model.is_trained) and \
+                                                  (total_data_points >= self.slippage_reg_model.min_samples_to_train)
+                        
+                        # Condition 2: Model is already trained AND enough new ticks have passed for a retrain
+                        # Retrain interval should be based on number of data points generated, not just ticks if num_probes varies
+                        # For simplicity, let's stick to ticks_since_last_train for now.
+                        # The number of actual data points added since last train is ticks_since_last_train * len(self.probe_order_sizes_usd)
+                        samples_since_last_train = self.ticks_since_last_train * (len(self.probe_order_sizes_usd) if len(self.probe_order_sizes_usd) > 0 else 1)
+                        
+                        # Let's use self.train_interval_ticks directly as the number of *WebSocket updates* between retrains
+                        time_for_retrain = self.slippage_reg_model.is_trained and \
+                                           (self.ticks_since_last_train >= self.train_interval_ticks)
+
+                        if ready_for_initial_train or time_for_retrain:
+                            logger.info(f"Attempting to train model. Initial: {ready_for_initial_train}, Retrain: {time_for_retrain}, Total data: {total_data_points}")
+                            if self.slippage_reg_model.train(): 
+                                logger.info(f"Model (re)trained successfully with {self.slippage_reg_model.training_samples_count} samples. Updating metrics.")
+                            else:
+                                logger.warning(f"Model training attempt failed or not enough data for split. Total data points: {total_data_points}")
+                            self.ticks_since_last_train = 0 # Reset counter after attempting to train
+                else:
+                    crossed_ask = current_ba_tuple[0] if current_ba_tuple else "N/A"
+                    crossed_bid = current_bb_tuple[0] if current_bb_tuple else "N/A"
+                    logger.warning(f"Book crossed or incomplete: Best Ask {crossed_ask} / Best Bid {crossed_bid}. Skipping probe data generation for this tick.")
             
-            self._recalculate_all_outputs() # This will now use the regression model if trained
-
-        elif status == "disconnected_error": # Reset all on disconnect
-            self.status_bar_text.set("Status: WebSocket Disconnected (Error)."); self.is_connected_with_symbol = False
-            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: var.set("N/A")
-            logger.warning("UI updated: Disconnected (Error)")
-        elif status == "disconnected_clean": # Reset all on disconnect
-            self.status_bar_text.set("Status: WebSocket Disconnected."); self.is_connected_with_symbol = False
-            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: var.set("N/A")
-            logger.info("UI updated: Disconnected (Cleanly)")
-
+            self._recalculate_all_outputs() # This will use the latest model state
+            
     # --- WebSocket and Shutdown methods remain the same ---
     def _start_websocket_connection(self):
         # ...
@@ -547,6 +724,12 @@ class TradingSimulatorApp(tk.Tk):
         # ...
         logger.info("Close button clicked. Initiating shutdown sequence...")
         if self.loop and self.loop.is_running():
+            logger.info("Attempting to cancel all tasks in asyncio event loop...")
+            # --- NEW LINES TO CANCEL TASKS ---
+            for task in asyncio.all_tasks(self.loop):
+                if task is not asyncio.current_task(self.loop): # Don't cancel self if called from within loop
+                    task.cancel()
+            # --- END OF NEW LINES ---
             logger.info("Attempting to stop asyncio event loop...")
             self.loop.call_soon_threadsafe(self.loop.stop)
         else:
