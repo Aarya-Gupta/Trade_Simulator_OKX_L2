@@ -38,6 +38,15 @@ if not os.path.exists(REGRESSION_DATA_LOG_FILE) or os.path.getsize(REGRESSION_DA
             "predicted_slippage_pct_regression"
         ])
 
+# --- NEW: CSV File for logging model performance over training ---
+MODEL_PERFORMANCE_LOG_FILE = "model_performance_log.csv"
+if not os.path.exists(MODEL_PERFORMANCE_LOG_FILE) or os.path.getsize(MODEL_PERFORMANCE_LOG_FILE) == 0:
+    with open(MODEL_PERFORMANCE_LOG_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "training_timestamp", "num_training_samples", "test_mse", "test_r2_score"
+        ])
+
 class TradingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -677,6 +686,16 @@ class TradingSimulatorApp(tk.Tk):
                             logger.info(f"Attempting to train model. Initial: {ready_for_initial_train}, Retrain: {time_for_retrain}, Total data: {total_data_points}")
                             if self.slippage_reg_model.train(): 
                                 logger.info(f"Model (re)trained successfully with {self.slippage_reg_model.training_samples_count} samples. Updating metrics.")
+                                # --- NEW: Log model performance to separate CSV ---
+                                metrics = self.slippage_reg_model.get_metrics()
+                                with open(MODEL_PERFORMANCE_LOG_FILE, 'a', newline='') as f:
+                                    writer = csv.writer(f)
+                                    writer.writerow([
+                                        time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                        metrics.get('training_samples', 0),
+                                        metrics.get('mse', float('nan')),
+                                        metrics.get('r2', float('nan'))
+                                    ])
                             else:
                                 logger.warning(f"Model training attempt failed or not enough data for split. Total data points: {total_data_points}")
                             self.ticks_since_last_train = 0 # Reset counter after attempting to train
@@ -686,7 +705,9 @@ class TradingSimulatorApp(tk.Tk):
                     logger.warning(f"Book crossed or incomplete: Best Ask {crossed_ask} / Best Bid {crossed_bid}. Skipping probe data generation for this tick.")
             
             self._recalculate_all_outputs() # This will use the latest model state
-            
+        elif status == "disconnected_error": self.status_bar_text.set("Status: WebSocket Disconnected (Error)."); self.is_connected_with_symbol = False; [(var.set("N/A")) for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]]; logger.warning("UI updated: Disconnected (Error)")
+        elif status == "disconnected_clean": self.status_bar_text.set("Status: WebSocket Disconnected."); self.is_connected_with_symbol = False; [(var.set("N/A")) for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]]; logger.info("UI updated: Disconnected (Cleanly)")
+           
     # --- WebSocket and Shutdown methods remain the same ---
     def _start_websocket_connection(self):
         # ...
