@@ -4,6 +4,10 @@ from typing import List, Tuple, Dict, Any
 logger = logging.getLogger(__name__)
 
 class OrderBookManager:
+    """
+    Manages the L2 order book data (asks and bids) received from the WebSocket.
+    Provides methods to update and query the book.
+    """
     def __init__(self):
         self.asks: List[Tuple[float, float]] = []  # List of (price, quantity) tuples
         self.bids: List[Tuple[float, float]] = []  # List of (price, quantity) tuples

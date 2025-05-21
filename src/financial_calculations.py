@@ -23,6 +23,17 @@ from sklearn.metrics import mean_squared_error, r2_score
 logger = logging.getLogger(__name__)
 
 def calculate_expected_fees(quantity_usd: float, fee_tier: str) -> float:
+    """
+    Calculates the expected trading fees based on the quantity in USD and fee tier.
+    Assumes market orders are always Taker orders.
+
+    Args:
+        quantity_usd (float): The total value of the order in USD.
+        fee_tier (str): The selected fee tier from the UI (e.g., "Regular User LV1").
+
+    Returns:
+        float: The calculated fee in USD. Returns 0.0 if quantity is invalid.
+    """
     if not isinstance(quantity_usd, (int, float)) or quantity_usd < 0:
         logger.warning(f"Invalid quantity_usd for fee calculation: {quantity_usd}")
         return 0.0
@@ -115,9 +126,9 @@ def calculate_slippage_walk_book(
 
     average_execution_price = actual_usd_spent / total_asset_acquired
     
+    # For a BUY, positive slippage is an additional cost (paid more than mid-price)
     slippage_value = average_execution_price - mid_price_snapshot # For a BUY, positive slippage is bad (paid more)
     slippage_percentage = (slippage_value / mid_price_snapshot) * 100.0
-    
     # logger.debug(f"Slippage Result: AvgExecPrice={average_execution_price}, Slippage%={slippage_percentage}, AssetAcquired={total_asset_acquired}, USDSpent={actual_usd_spent}")
 
     return slippage_percentage, average_execution_price, total_asset_acquired, actual_usd_spent
@@ -174,7 +185,6 @@ class SlippageRegressionModel:
         self.min_samples_to_train = min_samples_to_train
         self.features_dim = features_dim # order_size_usd, spread_bps, depth_best_ask_usd
         self.test_set_size = test_set_size # Proportion of data to use for testing
-        # --- NEW: Metrics storage ---
         self.mse = None
         self.r2 = None
         self.training_samples_count = 0
@@ -193,54 +203,6 @@ class SlippageRegressionModel:
         #     self.data_X.pop(0)
         #     self.data_y.pop(0)
 
-    # def train(self) -> bool: # Return type changed to bool
-    #     if len(self.data_X) < self.min_samples_to_train:
-    #         logger.debug(f"Not enough samples to train regression model. Have {len(self.data_X)}, need {self.min_samples_to_train}.")
-    #         self.is_trained = False
-    #         return False
-        
-    #     # try:
-    #     #     X_train = np.array(self.data_X)
-    #     #     y_train = np.array(self.data_y)
-            
-    #     #     # Reshape X if it's 1D (e.g. if only one feature was used, though we plan for multiple)
-    #     #     if X_train.ndim == 1:
-    #     #         X_train = X_train.reshape(-1, 1)
-
-    #     #     self.model.fit(X_train, y_train)
-    #     #     self.is_trained = True
-    #     #     logger.info(f"Slippage regression model trained with {len(self.data_X)} samples.")
-    #     #     # logger.info(f"Model coefficients: {self.model.coef_}, Intercept: {self.model.intercept_}")
-    #     #     return True
-    #     # except Exception as e:
-    #     #     logger.error(f"Error training slippage regression model: {e}", exc_info=True)
-    #     #     self.is_trained = False
-    #     #     return False
-
-    #     try:
-    #         X = np.array(self.data_X)
-    #         y = np.array(self.data_y)
-            
-    #         if X.ndim == 1: X = X.reshape(-1, 1)
-
-    #         # --- NEW: Train-test split ---
-    #         if len(X) * self.test_set_size < 1 : # Ensure test set has at least 1 sample
-    #             # Not enough data for a meaningful split, train on all for now
-    #             X_train, X_test, y_train, y_test = X, X, y, y # Effectively no test set this round
-    #             logger.warning("Not enough data for train-test split, training on all data. Metrics will be on training data.")
-    #         else:
-    #             X_train, X_test, y_train, y_test = train_test_split(
-    #                 X, y, test_size=self.test_set_size, random_state=42 # random_state for reproducibility
-    #             )
-
-    #         if len(X_train) == 0: # Should not happen if min_samples_to_train > 0
-    #             logger.warning("Training set is empty after split. Cannot train.")
-    #             self.is_trained = False
-    #             return False
-
-    #         self.model.fit(X_train, y_train)
-    #         self.is_trained = True
-    #         self.training_samples_count = len(X_train) # Store how many samples were used for this training
     def train(self) -> bool: 
         logger.debug(f"Train called. Total data points available: {len(self.data_X)}") # Add this
         if len(self.data_X) < self.min_samples_to_train:
@@ -254,7 +216,7 @@ class SlippageRegressionModel:
             
             if X.ndim == 1: X = X.reshape(-1, 1)
 
-            # --- MODIFIED: Check for sufficient data for split more carefully ---
+            # Check for sufficient data for split more carefully
             min_test_samples = 1 # We need at least 1 sample in the test set for evaluation
             min_train_samples = 1 # And at least 1 in the train set
 
@@ -279,7 +241,7 @@ class SlippageRegressionModel:
             self.is_trained = True  # Set only after successful fit.
             self.training_samples_count = len(X_train) # Correctly set here
 
-            # --- NEW: Evaluate on test set (if X_test is not same as X_train due to split) ---
+            # --- Evaluate on test set (if X_test is not same as X_train due to split) ---
             if len(X_test) > 0 :
                 y_pred_test = self.model.predict(X_test)
                 self.mse = mean_squared_error(y_test, y_pred_test)
@@ -315,7 +277,7 @@ class SlippageRegressionModel:
             logger.error(f"Error predicting slippage: {e}", exc_info=True)
             return None
     
-    # --- NEW: Getter methods for metrics ---
+    # --- Getter methods for metrics ---
     def get_metrics(self) -> Dict[str, Optional[float]]:
         return {
             "mse": self.mse,
