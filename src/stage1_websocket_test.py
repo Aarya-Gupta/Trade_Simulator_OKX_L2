@@ -4,10 +4,13 @@ import json
 import logging
 
 # Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # WebSocket URL provided by GoQuant
 WEBSOCKET_URL = "wss://ws.gomarket-cpp.goquant.io/ws/l2-orderbook/okx/BTC-USDT-SWAP"
+
 
 async def connect_and_listen():
     """
@@ -18,19 +21,23 @@ async def connect_and_listen():
         async with websockets.connect(WEBSOCKET_URL) as websocket:
             logging.info("Successfully connected to WebSocket.")
             logging.info("Listening for L2 order book data...")
-            
+
             async for message in websocket:
                 try:
                     data = json.loads(message)
                     # For now, just print the received data structure
                     # In later stages, we'll process this data
-                    logging.info(f"Received data: {data['exchange']} {data['symbol']} @ {data['timestamp']}")
+                    logging.info(
+                        f"Received data: {data['exchange']} {data['symbol']} @ {data['timestamp']}"
+                    )
                     # Optionally print more details or the whole data structure
-                    # print(json.dumps(data, indent=2)) 
+                    # print(json.dumps(data, indent=2))
                 except json.JSONDecodeError:
                     logging.error(f"Could not decode JSON: {message}")
                 except KeyError as e:
-                    logging.error(f"Missing key in received data: {e} - Data: {message}")
+                    logging.error(
+                        f"Missing key in received data: {e} - Data: {message}"
+                    )
                 except Exception as e:
                     logging.error(f"Error processing message: {e} - Data: {message}")
 
@@ -39,11 +46,14 @@ async def connect_and_listen():
     except websockets.exceptions.InvalidURI:
         logging.error(f"Invalid WebSocket URI: {WEBSOCKET_URL}")
     except ConnectionRefusedError:
-        logging.error(f"Connection refused. Ensure the server is running and accessible (VPN?).")
+        logging.error(
+            f"Connection refused. Ensure the server is running and accessible (VPN?)."
+        )
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
     finally:
         logging.info("WebSocket connection closed or attempt failed.")
+
 
 if __name__ == "__main__":
     try:

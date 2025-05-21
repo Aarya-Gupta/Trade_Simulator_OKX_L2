@@ -3,11 +3,13 @@ from typing import List, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+
 class OrderBookManager:
     """
     Manages the L2 order book data (asks and bids) received from the WebSocket.
     Provides methods to update and query the book.
     """
+
     def __init__(self):
         self.asks: List[Tuple[float, float]] = []  # List of (price, quantity) tuples
         self.bids: List[Tuple[float, float]] = []  # List of (price, quantity) tuples
@@ -30,7 +32,7 @@ class OrderBookManager:
             raw_asks = data.get("asks", [])
             self.asks = sorted(
                 [(float(price), float(quantity)) for price, quantity in raw_asks],
-                key=lambda x: x[0]  # Sort by price (first element)
+                key=lambda x: x[0],  # Sort by price (first element)
             )
 
             # Process bids: convert strings to floats, sort by price descending
@@ -38,14 +40,16 @@ class OrderBookManager:
             self.bids = sorted(
                 [(float(price), float(quantity)) for price, quantity in raw_bids],
                 key=lambda x: x[0],  # Sort by price (first element)
-                reverse=True
+                reverse=True,
             )
             # logger.debug(f"Order book updated for {self.symbol} @ {self.timestamp}. "
             #              f"Asks: {len(self.asks)}, Bids: {len(self.bids)}")
         except KeyError as e:
             logger.error(f"KeyError while updating order book: {e} in data {data}")
         except ValueError as e:
-            logger.error(f"ValueError (likely float conversion) while updating order book: {e} in data {data}")
+            logger.error(
+                f"ValueError (likely float conversion) while updating order book: {e} in data {data}"
+            )
         except Exception as e:
             logger.error(f"Unexpected error updating order book: {e} in data {data}")
 
@@ -66,11 +70,21 @@ class OrderBookManager:
         return None
 
     def __str__(self):
-        best_ask_str = f"Best Ask: {self.get_best_ask()}" if self.asks else "Best Ask: N/A"
-        best_bid_str = f"Best Bid: {self.get_best_bid()}" if self.bids else "Best Bid: N/A"
-        spread_str = f"Spread: {self.get_spread()}" if self.get_spread() is not None else "Spread: N/A"
-        return (f"OrderBook ({self.exchange} - {self.symbol} @ {self.timestamp}):\n"
-                f"  {best_ask_str}\n"
-                f"  {best_bid_str}\n"
-                f"  {spread_str}\n"
-                f"  Total Asks: {len(self.asks)}, Total Bids: {len(self.bids)}")
+        best_ask_str = (
+            f"Best Ask: {self.get_best_ask()}" if self.asks else "Best Ask: N/A"
+        )
+        best_bid_str = (
+            f"Best Bid: {self.get_best_bid()}" if self.bids else "Best Bid: N/A"
+        )
+        spread_str = (
+            f"Spread: {self.get_spread()}"
+            if self.get_spread() is not None
+            else "Spread: N/A"
+        )
+        return (
+            f"OrderBook ({self.exchange} - {self.symbol} @ {self.timestamp}):\n"
+            f"  {best_ask_str}\n"
+            f"  {best_bid_str}\n"
+            f"  {spread_str}\n"
+            f"  Total Asks: {len(self.asks)}, Total Bids: {len(self.bids)}"
+        )
