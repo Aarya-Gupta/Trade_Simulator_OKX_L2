@@ -94,8 +94,8 @@ The application is structured into several Python modules within the `src/` dire
 
 1.  **Clone the repository (if applicable, or extract the archive):**
     ```bash
-    # git clone [YourPrivateGitHubLink]
-    # cd goquant_intern_assignment
+    # git clone https://github.com/Aarya-Gupta/Trade_Simulator_OKX_L2.git
+    # cd Trade_Simulator_OKX_L2
     ```
 
 2.  **Create a virtual environment (recommended):**
