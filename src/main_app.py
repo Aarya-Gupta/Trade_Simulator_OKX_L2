@@ -51,7 +51,8 @@ class TradingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GoQuant Trade Simulator")
-        self.geometry("850x650")
+        self.geometry("850x780")
+        # Increased height for new latency vars
 
         # --- (Core components: OrderBookManager, WebSocket thread management) ---
 
@@ -90,7 +91,10 @@ class TradingSimulatorApp(tk.Tk):
         self.market_impact_var = tk.StringVar(value="N/A")
         self.net_cost_var = tk.StringVar(value="N/A")
         self.maker_taker_proportion_var = tk.StringVar(value="N/A")
-        self.internal_latency_var = tk.StringVar(value="N/A")
+        self.calc_latency_var = tk.StringVar(value="N/A")
+        self.ws_processing_latency_var = tk.StringVar(value="N/A") # NEW for L1
+        self.ui_update_latency_var = tk.StringVar(value="N/A") # NEW: UI StringVar set latency
+        self.e2e_latency_var = tk.StringVar(value="N/A") # NEW: End-to-End Latency
         self.timestamp_var = tk.StringVar(value="N/A")
         self.current_best_bid_var = tk.StringVar(value="N/A")
         self.current_best_ask_var = tk.StringVar(value="N/A")
@@ -210,17 +214,19 @@ class TradingSimulatorApp(tk.Tk):
         ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=5)
         row_num_output +=1
 
-        ttk.Label(self.output_panel, text="Other Metrics:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5))
+        ttk.Label(self.output_panel, text="Performance Metrics:", font=("Arial", 12, "bold")).grid(row=row_num_output, column=0, columnspan=2, sticky="w", pady=(5,5)) # Renamed from Other Metrics
         row_num_output += 1
 
         ttk.Label(self.output_panel, text="Maker/Taker Proportion:").grid(row=row_num_output, column=0, sticky="w", pady=2)
         ttk.Label(self.output_panel, textvariable=self.maker_taker_proportion_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
         row_num_output += 1
 
-        ttk.Label(self.output_panel, text="Internal Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2)
-        ttk.Label(self.output_panel, textvariable=self.internal_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2)
-        row_num_output += 1
-        
+        # --- MODIFIED Latency Labels ---
+        ttk.Label(self.output_panel, text="WS Proc. Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.ws_processing_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2); row_num_output += 1
+        ttk.Label(self.output_panel, text="Calc. Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.calc_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2); row_num_output += 1
+        ttk.Label(self.output_panel, text="UI Update Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.ui_update_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2); row_num_output += 1 # NEW UI latency label
+        ttk.Label(self.output_panel, text="End-to-End Latency (ms):").grid(row=row_num_output, column=0, sticky="w", pady=2); ttk.Label(self.output_panel, textvariable=self.e2e_latency_var).grid(row=row_num_output, column=1, sticky="ew", pady=2); row_num_output += 1 # NEW E2E latency label
+
         # --- NEW: Regression Model Metrics UI ---
         ttk.Separator(self.output_panel, orient='horizontal').grid(row=row_num_output, column=0, columnspan=2, sticky='ew', pady=5)
         row_num_output +=1 # Reduced pady
@@ -246,7 +252,7 @@ class TradingSimulatorApp(tk.Tk):
 
     def _recalculate_all_outputs(self):
         # --- Start Latency Measurement ---
-        calc_start_time = time.perf_counter()
+        calc_start_time = time.perf_counter() # Start of L2 latency measurement
 
         # Reset numeric values at the start of each calculation attempt
         self.slippage_percentage_val = None
@@ -256,7 +262,7 @@ class TradingSimulatorApp(tk.Tk):
         self.actual_asset_traded = None
         self.actual_usd_spent_slippage = None # Important to reset this
 
-        current_latency = "N/A" # Default latency display
+        current_calc_latency = "N/A" # Default latency display
         predicted_slippage_pct_for_log = None # For CSV logging
 
         try:
@@ -376,7 +382,7 @@ class TradingSimulatorApp(tk.Tk):
         #     # --- End Latency Measurement & Update UI ---
         #     calc_end_time = time.perf_counter()
         #     processing_time_ms = (calc_end_time - calc_start_time) * 1000
-        #     current_latency = f"{processing_time_ms:.3f}" # Store as string for UI
+        #     current_calc_latency = f"{processing_time_ms:.3f}" # Store as string for UI
         #     logger.debug(f"Internal processing latency: {processing_time_ms:.3f} ms")
 
         # except Exception as e:
@@ -390,7 +396,7 @@ class TradingSimulatorApp(tk.Tk):
         # finally:
         #     # This ensures latency is updated even if an error occurred mid-calculation,
         #     # showing the time taken up to the error point or full calculation.
-        #     self.internal_latency_var.set(current_latency)
+        #     self.calc_latency_var.set(current_calc_latency)
             
 
             # --- Calculate Slippage (INTEGRATING REGRESSION) ---
@@ -460,12 +466,13 @@ class TradingSimulatorApp(tk.Tk):
             # --- NEW: Update Regression Metrics UI ---
             metrics = self.slippage_reg_model.get_metrics()
             self.reg_samples_var.set(f"{metrics.get('training_samples', 0.0):.0f}")
-            self.reg_mse_var.set(f"{metrics.get('mse', float('nan')):.6f}" if metrics.get('mse') is not None else "N/A")
+            # --- MODIFIED MSE Display format ---
+            self.reg_mse_var.set(f"{metrics.get('mse', float('nan')):.3e}" if metrics.get('mse') is not None else "N/A") # e.g., 1.234e-08
             self.reg_r2_var.set(f"{metrics.get('r2', float('nan')):.4f}" if metrics.get('r2') is not None else "N/A")
 
             calc_end_time = time.perf_counter()
             processing_time_ms = (calc_end_time - calc_start_time) * 1000
-            current_latency = f"{processing_time_ms:.3f}"
+            current_calc_latency = f"{processing_time_ms:.3f}" # This is L2.
 
             # --- NEW: Log data for user's current prediction to CSV ---
             # This logs the features for the user's actual order and the model's prediction for it.
@@ -496,7 +503,7 @@ class TradingSimulatorApp(tk.Tk):
             logger.error(f"Error during recalculation: {e}", exc_info=True) # error handling
             for var in [self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("Error")
         finally:
-            self.internal_latency_var.set(current_latency)
+            self.calc_latency_var.set(current_calc_latency) # Update calculation latency UI
 
     # def _update_ui_from_websocket(self, book_manager, status):
     #     # ... (This method largely stays the same) ...
@@ -522,11 +529,11 @@ class TradingSimulatorApp(tk.Tk):
     #     elif status == "disconnected_error":
     #         self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
     #         self.is_connected_with_symbol = False
-    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var]: 
     #             var.set("N/A")
     #         logger.warning("UI updated: Disconnected (Error)")
     #     elif status == "disconnected_clean":
-    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var]: 
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var]: 
     #             var.set("N/A")
     #         logger.info("UI updated: Disconnected (Cleanly)")
 
@@ -607,19 +614,35 @@ class TradingSimulatorApp(tk.Tk):
     #     elif status == "disconnected_error": # ... (Clearing UI including new metric fields) ...
     #         self.status_bar_text.set("Status: WebSocket Disconnected (Error).")
     #         self.is_connected_with_symbol = False
-    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
     #         logger.warning("UI updated: Disconnected (Error)")
     #     elif status == "disconnected_clean": # ... (Clearing UI including new metric fields) ...
     #         self.status_bar_text.set("Status: WebSocket Disconnected.")
     #         self.is_connected_with_symbol = False
-    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+    #         for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
     #         logger.info("UI updated: Disconnected (Cleanly)")
 
     # --- MODIFIED _update_ui_from_websocket method ---
-    def _update_ui_from_websocket(self, book_manager, status):
+    def _update_ui_from_websocket(self, book_manager, status_and_timestamps): 
+        # Unpack status and timestamps (ws_msg_arrival_time is from websockets_handler)
+        if isinstance(status_and_timestamps, tuple):
+            status, ws_msg_arrival_time = status_and_timestamps
+            # Set WS processing latency (L1) as soon as received
+            if ws_msg_arrival_time is not None:
+                ws_proc_latency_ms = (time.perf_counter() - ws_msg_arrival_time) * 1000
+                self.ws_processing_latency_var.set(f"{ws_proc_latency_ms:.3f}")
+            else:
+                self.ws_processing_latency_var.set("N/A")
+        else: # Fallback for older calls or if latency not passed
+            status = status_and_timestamps
+            self.ws_processing_latency_var.set("N/A")
+
         if status == "connected": 
             self.status_bar_text.set(f"Status: Connected to WebSocket. Waiting for data..."); logger.info("UI updated: Connected"); self.after(100, self._trigger_recalculation) 
         elif status == "data_update":
+             # --- START: UI Update Latency (L3) Measurement ---
+            ui_update_start_time = time.perf_counter()
+
             if not self.is_connected_with_symbol and book_manager.symbol: self.status_bar_text.set(f"Status: Connected to WebSocket ({book_manager.symbol})"); self.is_connected_with_symbol = True
             self.timestamp_var.set(book_manager.timestamp)
             best_bid = book_manager.get_best_bid(); self.current_best_bid_var.set(f"{best_bid[0]:.2f} ({best_bid[1]:.2f})" if best_bid else "N/A")
@@ -703,11 +726,30 @@ class TradingSimulatorApp(tk.Tk):
                     crossed_ask = current_ba_tuple[0] if current_ba_tuple else "N/A"
                     crossed_bid = current_bb_tuple[0] if current_bb_tuple else "N/A"
                     logger.warning(f"Book crossed or incomplete: Best Ask {crossed_ask} / Best Bid {crossed_bid}. Skipping probe data generation for this tick.")
-            
+            # This call will update self.calc_latency_var (L2)
             self._recalculate_all_outputs() # This will use the latest model state
-        elif status == "disconnected_error": self.status_bar_text.set("Status: WebSocket Disconnected (Error)."); self.is_connected_with_symbol = False; [(var.set("N/A")) for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]]; logger.warning("UI updated: Disconnected (Error)")
-        elif status == "disconnected_clean": self.status_bar_text.set("Status: WebSocket Disconnected."); self.is_connected_with_symbol = False; [(var.set("N/A")) for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.internal_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]]; logger.info("UI updated: Disconnected (Cleanly)")
-           
+
+            # --- END: UI Update Latency (L3) Measurement ---
+            ui_update_end_time = time.perf_counter()
+            ui_update_latency_ms = (ui_update_end_time - ui_update_start_time) * 1000
+            self.ui_update_latency_var.set(f"{ui_update_latency_ms:.3f}")
+
+            # --- Calculate End-to-End Latency (L4) ---
+            if ws_msg_arrival_time is not None:
+                e2e_latency_ms = (ui_update_end_time - ws_msg_arrival_time) * 1000
+                self.e2e_latency_var.set(f"{e2e_latency_ms:.3f}")
+            else:
+                self.e2e_latency_var.set("N/A")
+
+        elif status == "disconnected_error": 
+            self.status_bar_text.set("Status: WebSocket Disconnected (Error)."); self.is_connected_with_symbol = False; 
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var, self.ws_processing_latency_var, self.ui_update_latency_var, self.e2e_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+            logger.warning("UI updated: Disconnected (Error)")
+        elif status == "disconnected_clean": 
+            self.status_bar_text.set("Status: WebSocket Disconnected."); self.is_connected_with_symbol = False; 
+            for var in [self.timestamp_var, self.current_best_bid_var, self.current_best_ask_var, self.current_spread_var, self.fees_var, self.slippage_var, self.market_impact_var, self.net_cost_var, self.maker_taker_proportion_var, self.calc_latency_var, self.ws_processing_latency_var, self.ui_update_latency_var, self.e2e_latency_var, self.reg_mse_var, self.reg_r2_var, self.reg_samples_var]: var.set("N/A")
+            logger.info("UI updated: Disconnected (Cleanly)")
+            
     # --- WebSocket and Shutdown methods remain the same ---
     def _start_websocket_connection(self):
         # ...
@@ -737,9 +779,11 @@ class TradingSimulatorApp(tk.Tk):
                 loop.call_soon_threadsafe(loop.stop)
             logger.info("Asyncio event loop tasks finished in WebSocket thread.")
 
-    def schedule_ui_update(self, book_manager, status):
-        # ...
-        self.after(0, self._update_ui_from_websocket, book_manager, status)
+    # --- schedule_ui_update (MODIFIED to pass L1 latency) ---
+    def schedule_ui_update(self, book_manager, status, ws_processing_latency_ms=None): # Add new arg
+        # Use self.after to ensure UI updates happen in the main Tkinter thread.
+        # Pass status and latency as a tuple.
+        self.after(0, self._update_ui_from_websocket, book_manager, (status, ws_processing_latency_ms))
 
     def _on_closing(self):
         # ...

@@ -2,6 +2,7 @@ import asyncio
 import websockets
 import json
 import logging
+import time 
 
 logger = logging.getLogger(__name__)
 
@@ -21,62 +22,61 @@ async def connect_and_listen(book_manager, ui_update_callback=None):
             connection_established = True
             logger.info("Successfully connected to WebSocket.")
             if ui_update_callback:
-                ui_update_callback(book_manager, "connected") # Initial connected status
+                ui_update_callback(book_manager, "connected", None) # Initial connected status
 
             logger.info("Listening for L2 order book data...")
             
             async for message in websocket_client:
+                # --- START: L1 (WS Message to Book Update) Latency Measurement ---
+                ws_msg_arrival_time = time.perf_counter() # Mark the moment the message is available
+                
                 try:
                     data = json.loads(message)
-                    book_manager.update_book(data) # Symbol gets populated here
-                    
+                    book_manager.update_book(data) 
+                    # --- END: L1 Latency Measurement ---
                     if ui_update_callback:
-                        # Pass a "data_update_with_symbol" status for the first data message
-                        # if not book_manager.symbol_reported_to_ui: # Hypothetical flag
-                        ui_update_callback(book_manager, "data_update") 
-                        
+                        # Pass status and ws_msg_arrival_time as separate arguments
+                        ui_update_callback(book_manager, "data_update", ws_msg_arrival_time)
                 except json.JSONDecodeError:
                     logger.error(f"Could not decode JSON: {message}")
+                    if ui_update_callback: # Ensure callback is still made on error if needed, without latency
+                        ui_update_callback(book_manager, "data_error", None)
                 except Exception as e:
-                    logger.error(f"Error processing message in connect_and_listen: {e} - Data: {message}")
+                    logger.error(f"Error processing message in connect_and_listen: {e} - Data: {message}", exc_info=True) # Added exc_info
+                    if ui_update_callback:
+                        ui_update_callback(book_manager, "data_error", None)
 
     except websockets.exceptions.ConnectionClosed as e: # More specific catch
         logger.error(f"WebSocket connection closed: {e.reason} (Code: {e.code})")
         if ui_update_callback:
-            ui_update_callback(book_manager, "disconnected_error")
+            ui_update_callback(book_manager, "disconnected_error", None)
     except websockets.exceptions.InvalidURI:
         logger.error(f"Invalid WebSocket URI: {WEBSOCKET_URL}")
         if ui_update_callback:
-            ui_update_callback(book_manager, "disconnected_error")
+            ui_update_callback(book_manager, "disconnected_error", None)
     except ConnectionRefusedError:
         logger.error(f"Connection refused. Ensure the server is running and accessible (VPN?).")
         if ui_update_callback:
-            ui_update_callback(book_manager, "disconnected_error")
+            ui_update_callback(book_manager, "disconnected_error", None)
     except Exception as e: # Catch other potential errors during connection or listening
-        logger.error(f"An unexpected error occurred during WebSocket operation: {e}")
+        logger.error(f"An unexpected error occurred during WebSocket operation: {e}", exc_info=True) # Added exc_info
         if ui_update_callback:
-            ui_update_callback(book_manager, "disconnected_error")
+            ui_update_callback(book_manager, "disconnected_error", None)
     finally:
         logger.info("WebSocket connection process finished or attempt failed.")
         if ui_update_callback:
             # Determine if it was a clean disconnect or error
-            # If connection_established was true and websocket_client exists and is closed without a severe error code
             is_clean_disconnect = False
-            if connection_established and websocket_client:
-                # Common clean close codes: 1000 (Normal Closure), 1001 (Going Away)
-                if websocket_client.close_code in [1000, 1001]:
-                     is_clean_disconnect = True
-            
+            if connection_established and websocket_client and websocket_client.close_code in [1000, 1001]:
+                 is_clean_disconnect = True
             if is_clean_disconnect:
-                ui_update_callback(book_manager, "disconnected_clean")
+                ui_update_callback(book_manager, "disconnected_clean", None)
             elif connection_established : # if it was connected but closed uncleanly
-                ui_update_callback(book_manager, "disconnected_error")
+                ui_update_callback(book_manager, "disconnected_error", None)
             # If it never connected, "disconnected_error" would have been called by exception handlers.
             # If it was connected but the callback for error was not called above, call it now.
             elif not connection_established and ui_update_callback:
-                 # This case should ideally be covered by specific exceptions,
-                 # but as a fallback if no specific exception was caught before finally.
-                 pass # ui_update_callback(book_manager, "disconnected_error") - likely already called
+                 pass # ui_update_callback(book_manager, "disconnected_error", None) - likely already called
 
 
 if __name__ == "__main__":
