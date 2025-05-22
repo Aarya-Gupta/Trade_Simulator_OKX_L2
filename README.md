@@ -6,8 +6,11 @@ This project, developed as an assignment for GoQuant, is a high-performance trad
 
 The application features a Python-based backend for data processing and financial modeling, and a Tkinter-based graphical user interface (GUI) for user input and real-time display of calculated metrics. It incorporates several models to estimate costs, including a dynamically trained linear regression model for slippage.
 
-**Developed by**: `[Your Name/Handle]`  
+**Developed by**: `Aarya Gupta`  
 **Date**: May 2024
+
+![image](https://github.com/user-attachments/assets/eef1d9ab-1250-48f7-a2d2-eb78b0d16dec)
+Figure 1: High-Level System Architecture Diagram - When the Regression-based Slippage Model is used to calculate Transaction Cost and the Model's Performance Metrics.
 
 ---
 
